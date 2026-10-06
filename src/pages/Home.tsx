@@ -17,6 +17,11 @@ interface Song {
   file: Blob;
 }
 
+interface CatalogTitleCollection {
+  id: 'shubidx';
+  titles: string[];
+}
+
 interface MidiNote {
   time: number;
   duration: number;
@@ -66,6 +71,7 @@ const DATABASE_NAME = 'home-karaoke-library';
 const STORE_NAME = 'songs';
 const SOUND_FONT_STORE_NAME = 'soundfonts';
 const BACKGROUND_VIDEO_STORE_NAME = 'backgroundVideos';
+const CATALOG_TITLE_STORE_NAME = 'catalogTitles';
 const FORMAT_PATTERN = /\.(mp3|wav|ogg|m4a|aac|flac|mid|midi|kar|sf2|mp4|webm|mov|m4v)$/i;
 const MIME_TYPES: Record<string, string> = {
   aac: 'audio/aac',
@@ -86,7 +92,7 @@ const MIME_TYPES: Record<string, string> = {
 
 function openSongDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DATABASE_NAME, 4);
+    const request = indexedDB.open(DATABASE_NAME, 5);
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains(STORE_NAME)) {
         request.result.createObjectStore(STORE_NAME, { keyPath: 'id' });
@@ -96,6 +102,9 @@ function openSongDatabase(): Promise<IDBDatabase> {
       }
       if (!request.result.objectStoreNames.contains(BACKGROUND_VIDEO_STORE_NAME)) {
         request.result.createObjectStore(BACKGROUND_VIDEO_STORE_NAME, { keyPath: 'id' });
+      }
+      if (!request.result.objectStoreNames.contains(CATALOG_TITLE_STORE_NAME)) {
+        request.result.createObjectStore(CATALOG_TITLE_STORE_NAME, { keyPath: 'id' });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -237,6 +246,41 @@ async function saveSongs(songs: Song[]): Promise<void> {
   });
 }
 
+async function readCatalogTitles(): Promise<string[]> {
+  const database = await openSongDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(CATALOG_TITLE_STORE_NAME, 'readonly');
+    const request = transaction.objectStore(CATALOG_TITLE_STORE_NAME).get('shubidx');
+    request.onsuccess = () => resolve((request.result as CatalogTitleCollection | undefined)?.titles ?? []);
+    request.onerror = () => reject(request.error ?? new Error('Hindi mabasa ang IDX title catalog.'));
+    transaction.oncomplete = () => database.close();
+    transaction.onerror = () => {
+      database.close();
+      reject(transaction.error ?? new Error('May problema sa IDX title catalog.'));
+    };
+  });
+}
+
+async function saveCatalogTitles(titles: string[]): Promise<void> {
+  const database = await openSongDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(CATALOG_TITLE_STORE_NAME, 'readwrite');
+    transaction.objectStore(CATALOG_TITLE_STORE_NAME).put({ id: 'shubidx', titles } satisfies CatalogTitleCollection);
+    transaction.oncomplete = () => {
+      database.close();
+      resolve();
+    };
+    transaction.onerror = () => {
+      database.close();
+      reject(transaction.error ?? new Error('Hindi na-save ang IDX title catalog.'));
+    };
+    transaction.onabort = () => {
+      database.close();
+      reject(transaction.error ?? new Error('Hindi na-save ang IDX title catalog.'));
+    };
+  });
+}
+
 async function deleteSong(id: string): Promise<void> {
   const database = await openSongDatabase();
   return new Promise((resolve, reject) => {
@@ -262,7 +306,7 @@ function getSongTitle(fileName: string): string {
 }
 
 function getLyricScale(text: string): number {
-  return Math.min(1, 42 / Math.max(42, text.length));
+  return Math.max(0.75, Math.sqrt(50 / Math.max(50, text.length)));
 }
 
 function getLyricHighlightIndex(lyric: MidiLyric | undefined, time: number): number {
@@ -404,7 +448,9 @@ function parseMidiSong(songId: string, midi: Midi, rawMidi: Uint8Array): MidiSon
 }
 
 const Home: React.FC = () => {
+  const [searchMode, setSearchMode] = useState<'all' | 'title' | 'artist'>('all');
   const [songs, setSongs] = useState<Song[]>([]);
+  const [catalogTitles, setCatalogTitles] = useState<string[]>([]);
   const [backgroundVideos, setBackgroundVideos] = useState<BackgroundVideo[]>([]);
   const [queue, setQueue] = useState<string[]>([]);
   const [currentSong, setCurrentSong] = useState<Song | null>(null);
@@ -443,12 +489,13 @@ const Home: React.FC = () => {
 
   useEffect(() => {
     let isMounted = true;
-    Promise.all([readSongs(), readSoundFont(), readBackgroundVideos()])
-      .then(([loadedSongs, soundFontResult, loadedBackgroundVideos]) => {
+    Promise.all([readSongs(), readSoundFont(), readBackgroundVideos(), readCatalogTitles()])
+      .then(([loadedSongs, soundFontResult, loadedBackgroundVideos, loadedCatalogTitles]) => {
         if (!isMounted) return;
         setSongs(loadedSongs);
         setSoundFont(soundFontResult.soundFont);
         setBackgroundVideos(loadedBackgroundVideos);
+        setCatalogTitles(loadedCatalogTitles);
         if (soundFontResult.needsReimport) {
           setError('I-re-import ang ZIP para maayos ang lumang SoundFont at marinig ang buong MIDI instruments.');
         }
@@ -550,11 +597,24 @@ const Home: React.FC = () => {
   const deferredQuery = useDeferredValue(search.trim().toLocaleLowerCase());
   const matchingSongs = useMemo(
     () => deferredQuery
-      ? searchableSongs.filter((entry) => entry.searchText.includes(deferredQuery))
+      ? searchableSongs.filter((entry) => {
+        if (searchMode === 'title') return entry.song.title.toLocaleLowerCase().includes(deferredQuery);
+        if (searchMode === 'artist') return entry.song.artist.toLocaleLowerCase().includes(deferredQuery);
+        return entry.searchText.includes(deferredQuery);
+      })
       : searchableSongs,
-    [deferredQuery, searchableSongs],
+    [deferredQuery, searchMode, searchableSongs],
+  );
+  const matchingCatalogTitles = useMemo(
+    () => searchMode === 'artist'
+      ? []
+      : deferredQuery
+        ? catalogTitles.filter((title) => title.toLocaleLowerCase().includes(deferredQuery))
+        : catalogTitles,
+    [catalogTitles, deferredQuery, searchMode],
   );
   const visibleSongs = matchingSongs.slice(0, visibleSongLimit);
+  const visibleCatalogTitles = matchingCatalogTitles.slice(0, visibleSongLimit);
 
   const unlockMidiAudio = useCallback(async () => {
     const AudioContextConstructor = window.AudioContext;
@@ -802,12 +862,13 @@ const Home: React.FC = () => {
 
   const selectedSong = songCode ? songs[Number(songCode) - 1] : undefined;
 
-  const importZip = (archive: File): Promise<{ songs: number; soundFonts: number; backgrounds: number }> => new Promise((resolve, reject) => {
+  const importZip = (archive: File): Promise<{ songs: number; soundFonts: number; backgrounds: number; catalogTitles: number }> => new Promise((resolve, reject) => {
     const worker = new Worker(new URL('../workers/zipImportWorker.ts', import.meta.url), { type: 'module' });
     const reader = archive.stream().getReader();
     let loadedBytes = 0;
     let importedCount = 0;
     let importedBackgroundCount = 0;
+    let importedCatalogTitleCount = 0;
     let pendingBytes = 0;
     let pendingSongs: Song[] = [];
     const knownSongKeys = new Set(songs.map((song) => `${song.fileName.toLocaleLowerCase()}:${song.file.size}`));
@@ -815,6 +876,7 @@ const Home: React.FC = () => {
     let saveChain: Promise<void> = Promise.resolve();
     let soundFontSaveChain: Promise<void> = Promise.resolve();
     let backgroundSaveChain: Promise<void> = Promise.resolve();
+    let catalogTitleSaveChain: Promise<void> = Promise.resolve();
     let acknowledgeChunk: (() => void) | null = null;
     let settled = false;
 
@@ -840,15 +902,17 @@ const Home: React.FC = () => {
     };
 
     worker.onmessage = (event: MessageEvent<{
-      type: 'progress' | 'song' | 'soundfont' | 'background' | 'done' | 'error';
+      type: 'progress' | 'song' | 'soundfont' | 'background' | 'catalog-titles' | 'done' | 'error';
       loaded?: number;
       total?: number;
       foundMedia?: number;
       foundSoundFonts?: number;
       foundBackgroundVideos?: number;
+      foundCatalogTitles?: number;
       message?: string;
       fileName?: string;
       chunks?: Array<{ buffer: ArrayBuffer; byteOffset: number; byteLength: number }>;
+      titles?: string[];
     }>) => {
       const result = event.data;
       if (result.type === 'progress') {
@@ -860,6 +924,15 @@ const Home: React.FC = () => {
       }
       if (result.type === 'error') {
         finishWithError(result.message ?? 'Hindi ma-unzip ang ZIP file.');
+        return;
+      }
+      if (result.type === 'catalog-titles' && result.titles) {
+        importedCatalogTitleCount = result.titles.length;
+        catalogTitleSaveChain = catalogTitleSaveChain.then(async () => {
+          await saveCatalogTitles(result.titles ?? []);
+          setCatalogTitles(result.titles ?? []);
+        });
+        setImportProgress(`Nababasa ang ${importedCatalogTitleCount.toLocaleString()} title-only entries…`);
         return;
       }
       if (result.type === 'song' && result.fileName && result.chunks) {
@@ -944,11 +1017,11 @@ const Home: React.FC = () => {
       }
       if (result.type === 'done') {
         flushSongs();
-        void Promise.all([saveChain, soundFontSaveChain, backgroundSaveChain]).then(() => {
+        void Promise.all([saveChain, soundFontSaveChain, backgroundSaveChain, catalogTitleSaveChain]).then(() => {
           if (settled) return;
           settled = true;
           worker.terminate();
-          if (!result.foundMedia && !result.foundSoundFonts && !result.foundBackgroundVideos) {
+          if (!result.foundMedia && !result.foundSoundFonts && !result.foundBackgroundVideos && !result.foundCatalogTitles) {
             reject(new Error(`${archive.name}: walang suportadong kanta, .sf2 SoundFont, o background MP4 sa loob ng ZIP.`));
             return;
           }
@@ -956,6 +1029,7 @@ const Home: React.FC = () => {
             songs: importedCount,
             soundFonts: result.foundSoundFonts ?? 0,
             backgrounds: importedBackgroundCount,
+            catalogTitles: importedCatalogTitleCount,
           });
         }).catch((saveError: unknown) => {
           finishWithError(saveError instanceof Error ? saveError.message : 'Hindi na-save sa library ang laman ng ZIP.');
@@ -993,7 +1067,7 @@ const Home: React.FC = () => {
   });
 
   const enterDigit = (digit: number) => {
-    setSongCode((code) => (code.length >= 5 ? String(digit) : `${code}${digit}`));
+    setSongCode((code) => (code.length >= 6 ? String(digit) : `${code}${digit}`));
   };
 
   const reserveSong = (first = false) => {
@@ -1017,8 +1091,8 @@ const Home: React.FC = () => {
         if (/\.zip$/i.test(file.name)) {
           setImportProgress('Binubuksan ang ZIP…');
           const imported = await importZip(file);
-          setImportProgress(`Tapos · ${imported.songs} kanta · ${imported.soundFonts} sound bank · ${imported.backgrounds} background`);
-          if (!imported.backgrounds && !backgroundVideos.length) {
+          setImportProgress(`Tapos · ${imported.songs} kanta · ${imported.soundFonts} sound bank · ${imported.backgrounds} background · ${imported.catalogTitles.toLocaleString()} title-only`);
+          if (!imported.backgrounds && !backgroundVideos.length && !imported.catalogTitles) {
             setError(`${file.name}: walang nakilalang background video. Dapat nasa bgv/ folder o subfolder nito ang MP4, WebM, MOV, o M4V.`);
           }
           continue;
@@ -1099,10 +1173,10 @@ const Home: React.FC = () => {
 
   return (
     <IonPage>
-      <main className="karaoke-app">
+      <main className="karaoke-app cinema-layout">
         <div className="karaoke-shell">
           <header className="top-status">
-            <span className="song-counter">{currentSong ? `▶ ${formatTime(currentTime)}` : `${songs.length} kanta`}</span>
+            <span className="song-counter">{currentSong ? `▶ ${formatTime(currentTime)}${Number.isFinite(duration) ? ` / ${formatTime(duration)}` : ''}` : `${songs.length} kanta${catalogTitles.length ? ` · ${catalogTitles.length.toLocaleString()} title-only` : ''}`}</span>
             <button className="import-button" onClick={() => fileInputRef.current?.click()} disabled={isImporting} title="Mag-import ng kanta mula sa ZIP o audio/video file">
               {isImporting ? importProgress || 'Nag-i-import…' : '＋ KANTA'}
             </button>
@@ -1116,6 +1190,19 @@ const Home: React.FC = () => {
               aria-label="Pumili ng audio o video files"
             />
           </header>
+          {queuedSongs[0] && (
+            <button
+              type="button"
+              className="next-song-banner"
+              onClick={() => { setQueueOpen(true); setSearchOpen(false); }}
+              aria-label={`Susunod na kanta: code ${String(songs.findIndex((song) => song.id === queuedSongs[0].id) + 1).padStart(6, '0')}, ${queuedSongs[0].title}`}
+            >
+              <span className="next-song-label">NEXT</span>
+              <strong>{String(songs.findIndex((song) => song.id === queuedSongs[0].id) + 1).padStart(6, '0')}</strong>
+              <span className="next-song-title">{queuedSongs[0].title}</span>
+              <span className="next-song-open">RSV ›</span>
+            </button>
+          )}
 
           <section className={`karaoke-screen${currentSong && isVideoSong(currentSong) ? ' has-video' : ''}${currentSong && isMidiSong(currentSong) ? ' has-midi' : ''}${showBackgroundVideo ? ' has-motion' : ''}`} aria-label="Song display">
             {showBackgroundVideo && (
@@ -1159,11 +1246,10 @@ const Home: React.FC = () => {
               />
             )}
             <div className="water-glow" aria-hidden="true" />
-            {!currentSong || (!isVideoSong(currentSong) && !isMidiSong(currentSong)) ? <div className="turtle-figure" aria-hidden="true" /> : null}
             <div className="title-block">
               {currentSong && isMidiSong(currentSong) ? (
                 <>
-                  <span key={midiLyricIndex} className="line" style={{ fontSize: `clamp(13px, ${4.6 * getLyricScale(activeLyricText)}vw, ${27 * getLyricScale(activeLyricText)}px)` }}>
+                  <span key={midiLyricIndex} className="line" style={{ fontSize: `clamp(18px, ${6 * getLyricScale(activeLyricText)}vw, ${34 * getLyricScale(activeLyricText)}px)` }}>
                     {activeLyric ? (
                       <>
                         <span className="lyric-read">{activeLyricText.slice(0, activeLyricHighlight)}</span>
@@ -1171,21 +1257,21 @@ const Home: React.FC = () => {
                       </>
                     ) : activeLyricText}
                   </span>
-                  <span key={midiLyricIndex + 1} className="line accent" style={{ fontSize: `clamp(13px, ${3.7 * getLyricScale(previewLyricText)}vw, ${21 * getLyricScale(previewLyricText)}px)` }}>{previewLyricText}</span>
+                  <span key={midiLyricIndex + 1} className="line accent" style={{ fontSize: `clamp(16px, ${4.8 * getLyricScale(previewLyricText)}vw, ${26 * getLyricScale(previewLyricText)}px)` }}>{previewLyricText}</span>
                   {soundFont && !currentMidiSong?.lyrics.length && <span className="lyric-hint">MIDI sound: {soundFont.fileName}</span>}
                   {!currentMidiSong?.lyrics.length && <span className="lyric-hint">Walang lyrics sa file na ito · pumili ng .KAR na may lyrics</span>}
                 </>
               ) : currentSong ? (
                 <>
-                  <span className="line">{currentSong.title}</span>
-                  <span className="line accent">{currentSong.artist}</span>
+                  <span className="line song-title">{currentSong.title}</span>
+                  <span className="line accent song-artist">Singer: {currentSong.artist}</span>
                   {!isVideoSong(currentSong) && <span className="lyric-hint">Audio track · idagdag ang karaoke video para sa lyrics</span>}
                 </>
               ) : (
                 <>
-                  <span className="line">Pili ng kanta</span>
-                  <span className="line accent">at kantahan na!</span>
-                  <span className="lyric-hint">{songs.length ? 'Pindutin ang SEARCH o gamitin ang song code' : 'Pindutin ang + KANTA para mag-import'}</span>
+                  <span className="line song-title">Select a Song</span>
+                  <span className="idle-song-code">{(songCode || '0').padStart(6, '0')}</span>
+                  {selectedSong && <span className="line accent song-artist">{selectedSong.title}</span>}
                 </>
               )}
             </div>
@@ -1196,6 +1282,7 @@ const Home: React.FC = () => {
             )}
           </section>
 
+          <div className="karaoke-transport">
           <div className="control-strip">
             <div className="control-box">
               <span>KEY:</span>
@@ -1221,6 +1308,8 @@ const Home: React.FC = () => {
             <button type="button" className="tool-button" onClick={playPrevious} aria-label="Nakaraang kanta">|◀</button>
             <button type="button" className="tool-button active" onClick={() => currentSong && setIsPlaying((playing) => !playing)} disabled={!currentSong} aria-label={isPlaying ? 'I-pause' : 'I-play'}>{isPlaying ? 'Ⅱ' : '▶'}</button>
             <button type="button" className="tool-button" onClick={playNext} disabled={!queue.length} aria-label="Susunod na kanta">▶|</button>
+            <button type="button" className="tool-button stop-button" onClick={stopPlayback} disabled={!currentSong} aria-label="I-stop ang playback">■</button>
+          </div>
           </div>
 
           {searchOpen && (
@@ -1237,11 +1326,16 @@ const Home: React.FC = () => {
                   setSearch(event.target.value);
                   setVisibleSongLimit(50);
                 }}
-                placeholder="Hanapin ang kanta o artist"
+                placeholder={searchMode === 'title' ? 'Hanapin ang title' : searchMode === 'artist' ? 'Hanapin ang singer' : 'Search song or singer'}
                 aria-label="Hanapin ang kanta o artist"
                 autoFocus
               />
-              {songs.length === 0 ? (
+              <div className="search-filters" aria-label="Uri ng paghahanap">
+                <button type="button" className={searchMode === 'all' ? 'selected' : ''} onClick={() => setSearchMode('all')}>ALL</button>
+                <button type="button" className={searchMode === 'title' ? 'selected' : ''} onClick={() => setSearchMode('title')}>TITLE</button>
+                <button type="button" className={searchMode === 'artist' ? 'selected' : ''} onClick={() => setSearchMode('artist')}>SINGER</button>
+              </div>
+              {songs.length === 0 && catalogTitles.length === 0 ? (
                 <div className="drawer-empty">
                   Wala pang kanta. <button type="button" onClick={() => fileInputRef.current?.click()}>Mag-import ng files</button>
                 </div>
@@ -1259,10 +1353,28 @@ const Home: React.FC = () => {
                       </div>
                     );
                   })}
-                  {visibleSongs.length === 0 && <p className="drawer-empty">Walang kantang tumugma.</p>}
+                  {catalogTitles.length > 0 && (
+                    <>
+                      <div className="catalog-title-heading">
+                        IDX TITLE CATALOG · {catalogTitles.length.toLocaleString()} title-only · walang code/playback
+                      </div>
+                      {visibleCatalogTitles.map((title, index) => (
+                        <div className="library-song catalog-title-row" key={`${title}-${index}`}>
+                          <span className="library-number">—</span>
+                          <span className="catalog-title-text"><strong>{title}</strong><small>Title lang · walang song code o media</small></span>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                  {visibleSongs.length === 0 && visibleCatalogTitles.length === 0 && <p className="drawer-empty">Walang kantang tumugma.</p>}
                   {visibleSongs.length < matchingSongs.length && (
                     <button type="button" className="library-more" onClick={() => setVisibleSongLimit((limit) => limit + 50)}>
                       Magpakita pa ({matchingSongs.length - visibleSongs.length} pa)
+                    </button>
+                  )}
+                  {visibleCatalogTitles.length < matchingCatalogTitles.length && (
+                    <button type="button" className="library-more" onClick={() => setVisibleSongLimit((limit) => limit + 50)}>
+                      Magpakita pa ng title-only ({matchingCatalogTitles.length - visibleCatalogTitles.length} pa)
                     </button>
                   )}
                 </div>
@@ -1289,9 +1401,10 @@ const Home: React.FC = () => {
             </section>
           )}
 
+          <div className="karaoke-keypad">
           <div className="code-display" aria-live="polite">
             <span>SONG CODE</span>
-            <strong>{songCode || '— — — — —'}</strong>
+            <strong>{(songCode || '0').padStart(6, '0')}</strong>
             {selectedSong && <small>{selectedSong.title}</small>}
             {!selectedSong && songCode && <small className="invalid-code">Hindi nahanap ang code na ito</small>}
           </div>
@@ -1310,15 +1423,9 @@ const Home: React.FC = () => {
             })}
           </div>
 
-          {error && <div className="error-message" role="alert">{error}<button onClick={() => setError('')} aria-label="Isara">×</button></div>}
+          </div>
 
-          {currentSong && (
-            <div className="track-footer">
-              <span>{currentSong.title}</span>
-              <span>{formatTime(currentTime)} / {formatTime(duration)}</span>
-              <button type="button" onClick={stopPlayback} aria-label="I-stop ang playback">STOP</button>
-            </div>
-          )}
+          {error && <div className="error-message" role="alert">{error}<button onClick={() => setError('')} aria-label="Isara">×</button></div>}
         </div>
       </main>
     </IonPage>

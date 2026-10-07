@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { IonPage } from '@ionic/react';
 import { Midi } from '@tonejs/midi';
@@ -51,12 +51,13 @@ interface MidiSongData {
 }
 
 interface SoundFontData {
-  id: 'default';
+  id: string;
   fileName: string;
   buffer: ArrayBuffer;
 }
 
 interface SoundFontLoadResult {
+  soundFonts: SoundFontData[];
   soundFont: SoundFontData | null;
   needsReimport: boolean;
 }
@@ -70,6 +71,7 @@ interface BackgroundVideo {
 const DATABASE_NAME = 'home-karaoke-library';
 const STORE_NAME = 'songs';
 const SOUND_FONT_STORE_NAME = 'soundfonts';
+const ACTIVE_SOUND_FONT_KEY = 'home-karaoke-active-soundfont';
 const BACKGROUND_VIDEO_STORE_NAME = 'backgroundVideos';
 const CATALOG_TITLE_STORE_NAME = 'catalogTitles';
 const FORMAT_PATTERN = /\.(mp3|wav|ogg|m4a|aac|flac|mid|midi|kar|sf2|mp4|webm|mov|m4v)$/i;
@@ -113,16 +115,29 @@ function openSongDatabase(): Promise<IDBDatabase> {
   });
 }
 
+function getSoundFontId(fileName: string, size: number): string {
+  return `sf2:${fileName.toLocaleLowerCase()}:${size}`;
+}
+
 async function readSoundFont(): Promise<SoundFontLoadResult> {
   const database = await openSongDatabase();
   return new Promise((resolve, reject) => {
     const transaction = database.transaction(SOUND_FONT_STORE_NAME, 'readonly');
-    const request = transaction.objectStore(SOUND_FONT_STORE_NAME).get('default');
+    const request = transaction.objectStore(SOUND_FONT_STORE_NAME).getAll();
     request.onsuccess = () => {
-      const record = request.result as SoundFontData | undefined;
+      const records = request.result as SoundFontData[];
+      const soundFonts = records.filter((record) => record.buffer instanceof ArrayBuffer);
+      let selectedId: string | null = null;
+      try {
+        selectedId = localStorage.getItem(ACTIVE_SOUND_FONT_KEY);
+      } catch {
+        selectedId = null;
+      }
+      const soundFont = soundFonts.find((record) => record.id === selectedId) ?? soundFonts[0] ?? null;
       resolve({
-        soundFont: record?.buffer instanceof ArrayBuffer ? record : null,
-        needsReimport: Boolean(record && !(record.buffer instanceof ArrayBuffer)),
+        soundFonts,
+        soundFont,
+        needsReimport: records.some((record) => !(record.buffer instanceof ArrayBuffer)),
       });
     };
     request.onerror = () => reject(request.error ?? new Error('Hindi mabasa ang naka-save na SoundFont.'));
@@ -150,6 +165,26 @@ async function saveSoundFont(soundFont: SoundFontData): Promise<void> {
     transaction.onabort = () => {
       database.close();
       reject(transaction.error ?? new Error(`Hindi na-save ang SoundFont na ${soundFont.fileName}.`));
+    };
+  });
+}
+
+async function deleteSoundFont(id: string): Promise<void> {
+  const database = await openSongDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(SOUND_FONT_STORE_NAME, 'readwrite');
+    transaction.objectStore(SOUND_FONT_STORE_NAME).delete(id);
+    transaction.oncomplete = () => {
+      database.close();
+      resolve();
+    };
+    transaction.onerror = () => {
+      database.close();
+      reject(transaction.error ?? new Error('Hindi maalis ang SoundFont.'));
+    };
+    transaction.onabort = () => {
+      database.close();
+      reject(transaction.error ?? new Error('Hindi maalis ang SoundFont.'));
     };
   });
 }
@@ -301,12 +336,28 @@ async function deleteSong(id: string): Promise<void> {
   });
 }
 
-function getSongTitle(fileName: string): string {
-  return fileName.replace(/\.[^/.]+$/, '').replace(/[_-]+/g, ' ').trim() || fileName;
+async function clearSongStore(): Promise<void> {
+  const database = await openSongDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(STORE_NAME, 'readwrite');
+    transaction.objectStore(STORE_NAME).clear();
+    transaction.oncomplete = () => {
+      database.close();
+      resolve();
+    };
+    transaction.onerror = () => {
+      database.close();
+      reject(transaction.error ?? new Error('Hindi ma-clear ang mga kanta sa library.'));
+    };
+    transaction.onabort = () => {
+      database.close();
+      reject(transaction.error ?? new Error('Hindi ma-clear ang mga kanta sa library.'));
+    };
+  });
 }
 
-function getLyricScale(text: string): number {
-  return Math.max(0.75, Math.sqrt(50 / Math.max(50, text.length)));
+function getSongTitle(fileName: string): string {
+  return fileName.replace(/\.[^/.]+$/, '').replace(/[_-]+/g, ' ').trim() || fileName;
 }
 
 function getLyricHighlightIndex(lyric: MidiLyric | undefined, time: number): number {
@@ -461,12 +512,15 @@ const Home: React.FC = () => {
   const [visibleSongLimit, setVisibleSongLimit] = useState(50);
   const [searchOpen, setSearchOpen] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [midiSong, setMidiSong] = useState<MidiSongData | null>(null);
+  const [soundFonts, setSoundFonts] = useState<SoundFontData[]>([]);
   const [soundFont, setSoundFont] = useState<SoundFontData | null>(null);
   const [isMidiSynthReady, setIsMidiSynthReady] = useState(false);
   const [error, setError] = useState('');
   const [isImporting, setIsImporting] = useState(false);
+  const [isLibraryReady, setIsLibraryReady] = useState(false);
   const [importProgress, setImportProgress] = useState('');
   const [songCode, setSongCode] = useState('');
   const [keyValue, setKeyValue] = useState(0);
@@ -476,6 +530,9 @@ const Home: React.FC = () => {
   const [currentTime, setCurrentTime] = useState(0);
   const mediaRef = useRef<HTMLMediaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const soundFontInputRef = useRef<HTMLInputElement>(null);
+  const activeLyricTextRef = useRef<HTMLSpanElement>(null);
+  const previewLyricTextRef = useRef<HTMLSpanElement>(null);
   const historyRef = useRef<Song[]>([]);
   const midiPositionRef = useRef(0);
   const midiContextRef = useRef<AudioContext | null>(null);
@@ -486,6 +543,36 @@ const Home: React.FC = () => {
   const midiSynthLoadRef = useRef<Promise<void> | null>(null);
   const loadedSoundFontRef = useRef<SoundFontData | null>(null);
   const playNextRef = useRef<() => void>(() => {});
+  const isPlayingRef = useRef(false);
+  const isRotatingRef = useRef(false);
+
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
+
+  useEffect(() => {
+    let orientationTimer: number | undefined;
+    const handleOrientationChange = () => {
+      if (!isPlayingRef.current) return;
+      isRotatingRef.current = true;
+      window.clearTimeout(orientationTimer);
+      orientationTimer = window.setTimeout(() => {
+        isRotatingRef.current = false;
+        const media = mediaRef.current;
+        if (media?.paused) void media.play().catch(() => {});
+        const context = midiContextRef.current;
+        if (context?.state === 'suspended') void context.resume();
+      }, 500);
+    };
+
+    window.addEventListener('orientationchange', handleOrientationChange);
+    window.addEventListener('resize', handleOrientationChange);
+    return () => {
+      window.removeEventListener('orientationchange', handleOrientationChange);
+      window.removeEventListener('resize', handleOrientationChange);
+      window.clearTimeout(orientationTimer);
+    };
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -493,6 +580,8 @@ const Home: React.FC = () => {
       .then(([loadedSongs, soundFontResult, loadedBackgroundVideos, loadedCatalogTitles]) => {
         if (!isMounted) return;
         setSongs(loadedSongs);
+        setIsLibraryReady(true);
+        setSoundFonts(soundFontResult.soundFonts);
         setSoundFont(soundFontResult.soundFont);
         setBackgroundVideos(loadedBackgroundVideos);
         setCatalogTitles(loadedCatalogTitles);
@@ -509,6 +598,14 @@ const Home: React.FC = () => {
       void midiContextRef.current?.close();
     };
   }, []);
+
+  useEffect(() => {
+    if (soundFont || !midiSynthRef.current) return;
+    midiSynthRef.current.destroy();
+    midiSynthRef.current = null;
+    loadedSoundFontRef.current = null;
+    setIsMidiSynthReady(false);
+  }, [soundFont]);
 
   useEffect(() => {
     if (!backgroundVideos.length) {
@@ -826,7 +923,7 @@ const Home: React.FC = () => {
         setIsPlaying(false);
         playNextRef.current();
       }
-    }, 80);
+    }, 30);
 
     return () => {
       window.clearInterval(timer);
@@ -862,7 +959,12 @@ const Home: React.FC = () => {
 
   const selectedSong = songCode ? songs[Number(songCode) - 1] : undefined;
 
-  const importZip = (archive: File): Promise<{ songs: number; soundFonts: number; backgrounds: number; catalogTitles: number }> => new Promise((resolve, reject) => {
+  const importZip = (archive: File, knownSongKeys: Set<string>, soundFontsOnly = false): Promise<{
+    songs: number;
+    soundFonts: number;
+    backgrounds: number;
+    catalogTitles: number;
+  }> => new Promise((resolve, reject) => {
     const worker = new Worker(new URL('../workers/zipImportWorker.ts', import.meta.url), { type: 'module' });
     const reader = archive.stream().getReader();
     let loadedBytes = 0;
@@ -871,7 +973,6 @@ const Home: React.FC = () => {
     let importedCatalogTitleCount = 0;
     let pendingBytes = 0;
     let pendingSongs: Song[] = [];
-    const knownSongKeys = new Set(songs.map((song) => `${song.fileName.toLocaleLowerCase()}:${song.file.size}`));
     const knownBackgroundIds = new Set(backgroundVideos.map((video) => video.id));
     let saveChain: Promise<void> = Promise.resolve();
     let soundFontSaveChain: Promise<void> = Promise.resolve();
@@ -927,6 +1028,7 @@ const Home: React.FC = () => {
         return;
       }
       if (result.type === 'catalog-titles' && result.titles) {
+        if (soundFontsOnly) return;
         importedCatalogTitleCount = result.titles.length;
         catalogTitleSaveChain = catalogTitleSaveChain.then(async () => {
           await saveCatalogTitles(result.titles ?? []);
@@ -936,6 +1038,7 @@ const Home: React.FC = () => {
         return;
       }
       if (result.type === 'song' && result.fileName && result.chunks) {
+        if (soundFontsOnly) return;
         const fileName = result.fileName.split(/[\\/]/).pop() ?? result.fileName;
         const fileType = getMediaType(fileName);
         const parts = result.chunks.map((chunk) => new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
@@ -959,6 +1062,7 @@ const Home: React.FC = () => {
         return;
       }
       if ((result.type === 'soundfont' || result.type === 'background') && result.fileName && result.chunks) {
+        if (soundFontsOnly && result.type !== 'soundfont') return;
         const fileName = result.fileName.split(/[\\/]/).pop() ?? result.fileName;
         const byteLength = result.chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
         if (!Number.isSafeInteger(byteLength) || byteLength === 0) {
@@ -974,13 +1078,12 @@ const Home: React.FC = () => {
         });
         if (result.type === 'soundfont') {
           const soundFontFile: SoundFontData = {
-            id: 'default',
+            id: getSoundFontId(fileName, byteLength),
             fileName,
             buffer: fileBuffer.buffer,
           };
           soundFontSaveChain = soundFontSaveChain.then(async () => {
-            await saveSoundFont(soundFontFile);
-            setSoundFont(soundFontFile);
+            await saveAndSelectSoundFont(soundFontFile);
           });
           setImportProgress(`Ini-import ang SoundFont ${fileName}…`);
         } else {
@@ -1021,6 +1124,10 @@ const Home: React.FC = () => {
           if (settled) return;
           settled = true;
           worker.terminate();
+          if (soundFontsOnly && !result.foundSoundFonts) {
+            reject(new Error(`${archive.name}: walang .sf2 SoundFont sa loob ng ZIP.`));
+            return;
+          }
           if (!result.foundMedia && !result.foundSoundFonts && !result.foundBackgroundVideos && !result.foundCatalogTitles) {
             reject(new Error(`${archive.name}: walang suportadong kanta, .sf2 SoundFont, o background MP4 sa loob ng ZIP.`));
             return;
@@ -1086,11 +1193,12 @@ const Home: React.FC = () => {
     if (!files.length) return;
     setError('');
     setIsImporting(true);
+    const knownSongKeys = new Set(songs.map((song) => `${song.fileName.toLocaleLowerCase()}:${song.file.size}`));
     try {
       for (const file of files) {
         if (/\.zip$/i.test(file.name)) {
           setImportProgress('Binubuksan ang ZIP…');
-          const imported = await importZip(file);
+          const imported = await importZip(file, knownSongKeys);
           setImportProgress(`Tapos · ${imported.songs} kanta · ${imported.soundFonts} sound bank · ${imported.backgrounds} background · ${imported.catalogTitles.toLocaleString()} title-only`);
           if (!imported.backgrounds && !backgroundVideos.length && !imported.catalogTitles) {
             setError(`${file.name}: walang nakilalang background video. Dapat nasa bgv/ folder o subfolder nito ang MP4, WebM, MOV, o M4V.`);
@@ -1099,10 +1207,12 @@ const Home: React.FC = () => {
         }
 
         if (/\.sf2$/i.test(file.name)) {
-          const soundFontBuffer = await file.arrayBuffer();
-          const importedSoundFont: SoundFontData = { id: 'default', fileName: file.name, buffer: soundFontBuffer };
-          await saveSoundFont(importedSoundFont);
-          setSoundFont(importedSoundFont);
+          const importedSoundFont: SoundFontData = {
+            id: getSoundFontId(file.name, file.size),
+            fileName: file.name,
+            buffer: await file.arrayBuffer(),
+          };
+          await saveAndSelectSoundFont(importedSoundFont);
           if (currentSong && isMidiSong(currentSong)) void unlockMidiAudio();
           setImportProgress(`SoundFont handa · ${file.name}`);
           continue;
@@ -1111,6 +1221,9 @@ const Home: React.FC = () => {
         if (!file.type.startsWith('audio/') && !file.type.startsWith('video/') && !FORMAT_PATTERN.test(file.name)) {
           throw new Error(`${file.name} ay hindi suportadong ZIP, audio, o video file.`);
         }
+        const songKey = `${file.name.toLocaleLowerCase()}:${file.size}`;
+        if (knownSongKeys.has(songKey)) continue;
+        knownSongKeys.add(songKey);
         const song: Song = {
           id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
           title: getSongTitle(file.name),
@@ -1145,6 +1258,29 @@ const Home: React.FC = () => {
     }
   };
 
+  const removeAllSongs = async () => {
+    if (!songs.length || !window.confirm(`Sigurado ka bang aalisin ang lahat ng ${songs.length.toLocaleString()} kanta? Hindi mabubura ang SoundFont, background videos, o title catalog.`)) {
+      return;
+    }
+    setError('');
+    try {
+      await clearSongStore();
+      mediaRef.current?.pause();
+      if (mediaRef.current) mediaRef.current.currentTime = 0;
+      setSongs([]);
+      setQueue([]);
+      setCurrentSong(null);
+      setCurrentTime(0);
+      setDuration(Number.NaN);
+      setIsPlaying(false);
+      setMidiSong(null);
+      setSongCode('');
+      historyRef.current = [];
+    } catch (clearError: unknown) {
+      setError(clearError instanceof Error ? clearError.message : 'Hindi ma-clear ang mga kanta sa library.');
+    }
+  };
+
   const stopPlayback = () => {
     mediaRef.current?.pause();
     if (mediaRef.current) mediaRef.current.currentTime = 0;
@@ -1152,19 +1288,126 @@ const Home: React.FC = () => {
     setIsPlaying(false);
   };
 
+  const saveAndSelectSoundFont = async (font: SoundFontData) => {
+    await saveSoundFont(font);
+    setSoundFonts((current) => [...current.filter((item) => item.id !== font.id), font]);
+    try {
+      localStorage.setItem(ACTIVE_SOUND_FONT_KEY, font.id);
+    } catch (storageError: unknown) {
+      throw new Error(storageError instanceof Error
+        ? `Na-save ang ${font.fileName}, pero hindi ma-save ang napiling SoundFont: ${storageError.message}`
+        : `Na-save ang ${font.fileName}, pero hindi ma-save ang napiling SoundFont.`);
+    }
+    setSoundFont(font);
+  };
+
+  const chooseSoundFont = (font: SoundFontData) => {
+    try {
+      localStorage.setItem(ACTIVE_SOUND_FONT_KEY, font.id);
+      setSoundFont(font);
+      setError('');
+    } catch (storageError: unknown) {
+      setError(storageError instanceof Error
+        ? `Hindi ma-save ang napiling SoundFont: ${storageError.message}`
+        : 'Hindi ma-save ang napiling SoundFont.');
+    }
+  };
+
+  const removeSavedSoundFont = async (font: SoundFontData) => {
+    if (!window.confirm(`Alisin ang SoundFont na ${font.fileName}?`)) return;
+    try {
+      await deleteSoundFont(font.id);
+      const remaining = soundFonts.filter((item) => item.id !== font.id);
+      setSoundFonts(remaining);
+      if (soundFont?.id === font.id) {
+        const nextSoundFont = remaining[0] ?? null;
+        setSoundFont(nextSoundFont);
+        try {
+          if (nextSoundFont) localStorage.setItem(ACTIVE_SOUND_FONT_KEY, nextSoundFont.id);
+          else localStorage.removeItem(ACTIVE_SOUND_FONT_KEY);
+        } catch (storageError: unknown) {
+          setError(storageError instanceof Error
+            ? `Naalis ang SoundFont, pero hindi ma-save ang bagong selection: ${storageError.message}`
+            : 'Naalis ang SoundFont, pero hindi ma-save ang bagong selection.');
+        }
+      }
+    } catch (deleteError: unknown) {
+      setError(deleteError instanceof Error ? deleteError.message : 'Hindi maalis ang SoundFont.');
+    }
+  };
+
+  const onImportSoundFonts = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = '';
+    if (!files.length) return;
+    setError('');
+    setIsImporting(true);
+    try {
+      for (const file of files) {
+        if (/\.zip$/i.test(file.name)) {
+          setImportProgress(`Hinahanap ang .sf2 sa ${file.name}…`);
+          const imported = await importZip(file, new Set(), true);
+          setImportProgress(`Tapos · ${imported.soundFonts} SoundFont`);
+          continue;
+        }
+        if (!/\.sf2$/i.test(file.name)) {
+          throw new Error(`${file.name} ay hindi .sf2 SoundFont file.`);
+        }
+        setImportProgress(`Ini-import ang SoundFont ${file.name}…`);
+        await saveAndSelectSoundFont({
+          id: getSoundFontId(file.name, file.size),
+          fileName: file.name,
+          buffer: await file.arrayBuffer(),
+        });
+      }
+      if (currentSong && isMidiSong(currentSong)) void unlockMidiAudio();
+    } catch (importError: unknown) {
+      setError(importError instanceof Error ? importError.message : 'Hindi na-import ang SoundFont.');
+    } finally {
+      setIsImporting(false);
+      window.setTimeout(() => setImportProgress(''), 2500);
+    }
+  };
+
   const queuedSongs = queue.map((id) => songs.find((song) => song.id === id)).filter((song): song is Song => Boolean(song));
   const currentMidiSong = midiSong?.songId === currentSong?.id ? midiSong : null;
   const midiLyricIndex = currentMidiSong
     ? currentMidiSong.lyrics.findLastIndex((lyric) => lyric.time <= currentTime)
     : -1;
-  const activeLyric = midiLyricIndex >= 0 ? currentMidiSong?.lyrics[midiLyricIndex] : undefined;
-  const activeLyricHighlight = getLyricHighlightIndex(activeLyric, currentTime);
-  const activeLyricText = currentMidiSong?.lyrics.length
-    ? activeLyric?.text ?? currentSong?.title ?? ''
-    : currentSong?.title ?? '';
-  const previewLyricText = currentMidiSong?.lyrics.length && midiLyricIndex + 1 < currentMidiSong.lyrics.length
-    ? currentMidiSong.lyrics[midiLyricIndex + 1].text
-    : currentSong?.artist ?? '';
+  const activeIndex = Math.max(0, midiLyricIndex);
+  const isUpperLyricActive = activeIndex % 2 === 0;
+  const upperLyricIndex = isUpperLyricActive ? activeIndex : activeIndex + 1;
+  const lowerLyricIndex = isUpperLyricActive ? activeIndex + 1 : activeIndex;
+  const upperLyric = currentMidiSong?.lyrics[upperLyricIndex];
+  const lowerLyric = currentMidiSong?.lyrics[lowerLyricIndex];
+  const upperLyricText = upperLyric?.text ?? currentMidiSong?.lyrics[0].text ?? '';
+  const lowerLyricText = lowerLyric?.text ?? '';
+  const activeLyricHighlight = midiLyricIndex >= 0
+    ? getLyricHighlightIndex(isUpperLyricActive ? upperLyric : lowerLyric, currentTime)
+    : 0;
+
+  useLayoutEffect(() => {
+    const fitLyric = (element: HTMLSpanElement | null) => {
+      const container = element?.parentElement;
+      if (!element || !container) return;
+      element.style.transform = 'none';
+      const textWidth = element.getBoundingClientRect().width;
+      const availableWidth = container.clientWidth;
+      const scale = textWidth > availableWidth && textWidth > 0
+        ? availableWidth / textWidth
+        : 1;
+      element.style.transform = `scaleX(${scale})`;
+    };
+    const fitBothLines = () => {
+      fitLyric(activeLyricTextRef.current);
+      fitLyric(previewLyricTextRef.current);
+    };
+
+    fitBothLines();
+    window.addEventListener('resize', fitBothLines);
+    return () => window.removeEventListener('resize', fitBothLines);
+  }, [upperLyricText, lowerLyricText]);
+
   const showBackgroundVideo = Boolean(backgroundVideoUrl && (!currentSong || !isVideoSong(currentSong)));
   const nextBackgroundVideo = () => {
     if (backgroundVideos.length < 2) return;
@@ -1177,17 +1420,34 @@ const Home: React.FC = () => {
         <div className="karaoke-shell">
           <header className="top-status">
             <span className="song-counter">{currentSong ? `▶ ${formatTime(currentTime)}${Number.isFinite(duration) ? ` / ${formatTime(duration)}` : ''}` : `${songs.length} kanta${catalogTitles.length ? ` · ${catalogTitles.length.toLocaleString()} title-only` : ''}`}</span>
-            <button className="import-button" onClick={() => fileInputRef.current?.click()} disabled={isImporting} title="Mag-import ng kanta mula sa ZIP o audio/video file">
-              {isImporting ? importProgress || 'Nag-i-import…' : '＋ KANTA'}
+            <button className="import-button" onClick={() => fileInputRef.current?.click()} disabled={isImporting || !isLibraryReady} title="Mag-import ng kanta mula sa ZIP o audio/video file">
+              {isImporting ? importProgress || 'Nag-i-import…' : isLibraryReady ? '＋ KANTA' : 'NAGLO-LOAD…'}
             </button>
+            <button
+              type="button"
+              className="settings-button"
+              onClick={() => { setSettingsOpen((open) => !open); setSearchOpen(false); setQueueOpen(false); }}
+              aria-label="SoundFont settings"
+              title="Palitan ang MIDI SoundFont"
+            >⚙</button>
             <input
               ref={fileInputRef}
               className="visually-hidden"
               type="file"
+              disabled={!isLibraryReady || isImporting}
               accept=".zip,application/zip,audio/*,video/*,.mp3,.wav,.ogg,.m4a,.aac,.flac,.mid,.midi,.kar,.sf2,.mp4,.webm,.mov,.m4v"
               multiple
               onChange={onImportFiles}
               aria-label="Pumili ng audio o video files"
+            />
+            <input
+              ref={soundFontInputRef}
+              className="visually-hidden"
+              type="file"
+              accept=".sf2,.zip,application/zip,application/octet-stream"
+              multiple
+              onChange={onImportSoundFonts}
+              aria-label="Mag-import ng SoundFont files"
             />
           </header>
           {queuedSongs[0] && (
@@ -1221,27 +1481,27 @@ const Home: React.FC = () => {
             {currentSong && currentUrl && isVideoSong(currentSong) && (
               <video
                 ref={(element) => { mediaRef.current = element; }}
-                key={currentSong.id}
                 src={currentUrl}
+                preload="auto"
                 playsInline
                 onEnded={playNext}
                 onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
                 onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
                 onPlay={() => setIsPlaying(true)}
-                onPause={() => setIsPlaying(false)}
+                onPause={() => { if (!isRotatingRef.current) setIsPlaying(false); }}
                 aria-label={`Karaoke video: ${currentSong.title}`}
               />
             )}
             {currentSong && currentUrl && !isVideoSong(currentSong) && !isMidiSong(currentSong) && (
               <audio
                 ref={(element) => { mediaRef.current = element; }}
-                key={currentSong.id}
                 src={currentUrl}
+                preload="auto"
                 onEnded={playNext}
                 onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
                 onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
                 onPlay={() => setIsPlaying(true)}
-                onPause={() => setIsPlaying(false)}
+                onPause={() => { if (!isRotatingRef.current) setIsPlaying(false); }}
                 aria-label={`Audio: ${currentSong.title}`}
               />
             )}
@@ -1249,15 +1509,39 @@ const Home: React.FC = () => {
             <div className="title-block">
               {currentSong && isMidiSong(currentSong) ? (
                 <>
-                  <span key={midiLyricIndex} className="line" style={{ fontSize: `clamp(18px, ${6 * getLyricScale(activeLyricText)}vw, ${34 * getLyricScale(activeLyricText)}px)` }}>
-                    {activeLyric ? (
-                      <>
-                        <span className="lyric-read">{activeLyricText.slice(0, activeLyricHighlight)}</span>
-                        <span className="lyric-unread">{activeLyricText.slice(activeLyricHighlight)}</span>
-                      </>
-                    ) : activeLyricText}
-                  </span>
-                  <span key={midiLyricIndex + 1} className="line accent" style={{ fontSize: `clamp(16px, ${4.8 * getLyricScale(previewLyricText)}vw, ${26 * getLyricScale(previewLyricText)}px)` }}>{previewLyricText}</span>
+                  {currentMidiSong?.lyrics.length ? (
+                    <>
+                      <span className={`line ${isUpperLyricActive ? 'active-line' : 'preview-line'}`}>
+                        <span ref={isUpperLyricActive ? activeLyricTextRef : previewLyricTextRef} className="lyric-text">
+                          {isUpperLyricActive ? (
+                            <>
+                              <span className="lyric-read">{upperLyricText.slice(0, activeLyricHighlight)}</span>
+                              <span className="lyric-unread">{upperLyricText.slice(activeLyricHighlight)}</span>
+                            </>
+                          ) : upperLyricText}
+                        </span>
+                      </span>
+                      <span className={`line accent ${isUpperLyricActive ? 'preview-line' : 'active-line'}`}>
+                        <span ref={!isUpperLyricActive ? activeLyricTextRef : previewLyricTextRef} className="lyric-text">
+                          {!isUpperLyricActive ? (
+                            <>
+                              <span className="lyric-read">{lowerLyricText.slice(0, activeLyricHighlight)}</span>
+                              <span className="lyric-unread">{lowerLyricText.slice(activeLyricHighlight)}</span>
+                            </>
+                          ) : lowerLyricText}
+                        </span>
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="line song-title">
+                        <span ref={activeLyricTextRef} className="lyric-text">{upperLyricText}</span>
+                      </span>
+                      <span className="line accent song-artist">
+                        <span ref={previewLyricTextRef} className="lyric-text">{currentSong?.artist ?? ''}</span>
+                      </span>
+                    </>
+                  )}
                   {soundFont && !currentMidiSong?.lyrics.length && <span className="lyric-hint">MIDI sound: {soundFont.fileName}</span>}
                   {!currentMidiSong?.lyrics.length && <span className="lyric-hint">Walang lyrics sa file na ito · pumili ng .KAR na may lyrics</span>}
                 </>
@@ -1269,7 +1553,7 @@ const Home: React.FC = () => {
                 </>
               ) : (
                 <>
-                  <span className="line song-title">Select a Song</span>
+                  <span className="line song-title idle-title">Select a Song</span>
                   <span className="idle-song-code">{(songCode || '0').padStart(6, '0')}</span>
                   {selectedSong && <span className="line accent song-artist">{selectedSong.title}</span>}
                 </>
@@ -1316,7 +1600,10 @@ const Home: React.FC = () => {
             <section className="library-drawer" aria-label="Song library">
               <div className="drawer-heading">
                 <strong>SONG LIBRARY <span>{songs.length}</span></strong>
-                <button type="button" onClick={() => setSearchOpen(false)} aria-label="Isara ang library">×</button>
+                <div className="drawer-heading-actions">
+                  <button type="button" className="drawer-clear" onClick={() => void removeAllSongs()} disabled={!songs.length}>I-clear lahat</button>
+                  <button type="button" onClick={() => setSearchOpen(false)} aria-label="Isara ang library">×</button>
+                </div>
               </div>
               <input
                 className="song-search"
@@ -1379,6 +1666,49 @@ const Home: React.FC = () => {
                   )}
                 </div>
               )}
+            </section>
+          )}
+
+          {settingsOpen && (
+            <section className="settings-drawer" aria-label="SoundFont settings">
+              <div className="drawer-heading">
+                <strong>MIDI SOUNDFONTS <span>{soundFonts.length}</span></strong>
+                <button type="button" onClick={() => setSettingsOpen(false)} aria-label="Isara ang settings">×</button>
+              </div>
+              <p className="settings-description">
+                Piliin ang tunog ng mga MIDI/KAR kanta. Aktibo ngayon: {soundFont?.fileName ?? 'walang SoundFont'}.
+              </p>
+              <button
+                type="button"
+                className="settings-import-button"
+                onClick={() => soundFontInputRef.current?.click()}
+                disabled={isImporting}
+              >
+                {isImporting ? importProgress || 'Ini-import…' : '＋ Mag-import ng .SF2 o ZIP'}
+              </button>
+              <div className="soundfont-list">
+                {soundFonts.length ? soundFonts.map((font) => (
+                  <div className="soundfont-option" key={font.id}>
+                    <button
+                      type="button"
+                      className={`soundfont-select${soundFont?.id === font.id ? ' selected' : ''}`}
+                      onClick={() => chooseSoundFont(font)}
+                      disabled={soundFont?.id === font.id}
+                    >
+                      <strong>{font.fileName}</strong>
+                      <small>{soundFont?.id === font.id ? 'GINAGAMIT' : 'Pindutin para gamitin'}</small>
+                    </button>
+                    <button
+                      type="button"
+                      className="soundfont-delete"
+                      onClick={() => void removeSavedSoundFont(font)}
+                      aria-label={`Alisin ang SoundFont ${font.fileName}`}
+                    >×</button>
+                  </div>
+                )) : (
+                  <p className="drawer-empty">Wala pang naka-save na SoundFont. Mag-import ng .sf2 para pumili ng tunog.</p>
+                )}
+              </div>
             </section>
           )}
 

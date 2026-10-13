@@ -229,7 +229,9 @@ async function readSongs(): Promise<Song[]> {
   return new Promise((resolve, reject) => {
     const transaction = database.transaction(STORE_NAME, 'readonly');
     const request = transaction.objectStore(STORE_NAME).getAll();
-    request.onsuccess = () => resolve((request.result as Song[]).sort((a, b) => a.title.localeCompare(b.title)));
+    request.onsuccess = () => resolve((request.result as Song[])
+      .map((song) => ({ ...song, ...getSongMetadata(song.fileName) }))
+      .sort((a, b) => a.title.localeCompare(b.title)));
     request.onerror = () => reject(request.error ?? new Error('Hindi mabasa ang song library.'));
     transaction.oncomplete = () => database.close();
     transaction.onerror = () => {
@@ -356,8 +358,19 @@ async function clearSongStore(): Promise<void> {
   });
 }
 
-function getSongTitle(fileName: string): string {
-  return fileName.replace(/\.[^/.]+$/, '').replace(/[_-]+/g, ' ').trim() || fileName;
+function getSongMetadata(fileName: string): Pick<Song, 'title' | 'artist'> {
+  const baseName = fileName.replace(/\.[^/.]+$/, '').trim();
+  const parts = baseName.split(/\s+-\s+/);
+  if (parts.length >= 3 && /^\d+$/.test(parts[0].trim())) {
+    return {
+      title: parts[1].trim() || baseName,
+      artist: parts.slice(2).join(' - ').trim() || 'Hindi pa alam ang artist',
+    };
+  }
+  return {
+    title: baseName.replace(/[_-]+/g, ' ').trim() || fileName,
+    artist: 'Hindi pa alam ang artist',
+  };
 }
 
 function getLyricHighlightIndex(lyric: MidiLyric | undefined, time: number): number {
@@ -576,18 +589,25 @@ const Home: React.FC = () => {
 
   useEffect(() => {
     let isMounted = true;
-    Promise.all([readSongs(), readSoundFont(), readBackgroundVideos(), readCatalogTitles()])
-      .then(([loadedSongs, soundFontResult, loadedBackgroundVideos, loadedCatalogTitles]) => {
+    readSongs()
+      .then((loadedSongs) => {
         if (!isMounted) return;
         setSongs(loadedSongs);
         setIsLibraryReady(true);
-        setSoundFonts(soundFontResult.soundFonts);
-        setSoundFont(soundFontResult.soundFont);
-        setBackgroundVideos(loadedBackgroundVideos);
-        setCatalogTitles(loadedCatalogTitles);
-        if (soundFontResult.needsReimport) {
-          setError('I-re-import ang ZIP para maayos ang lumang SoundFont at marinig ang buong MIDI instruments.');
-        }
+        void Promise.all([readSoundFont(), readBackgroundVideos(), readCatalogTitles()])
+          .then(([soundFontResult, loadedBackgroundVideos, loadedCatalogTitles]) => {
+            if (!isMounted) return;
+            setSoundFonts(soundFontResult.soundFonts);
+            setSoundFont(soundFontResult.soundFont);
+            setBackgroundVideos(loadedBackgroundVideos);
+            setCatalogTitles(loadedCatalogTitles);
+            if (soundFontResult.needsReimport) {
+              setError('I-re-import ang ZIP para maayos ang lumang SoundFont at marinig ang buong MIDI instruments.');
+            }
+          })
+          .catch((loadError: unknown) => {
+            if (isMounted) setError(loadError instanceof Error ? loadError.message : 'Hindi mabuksan ang optional media library.');
+          });
       })
       .catch((loadError: unknown) => {
         if (isMounted) setError(loadError instanceof Error ? loadError.message : 'Hindi mabuksan ang song library.');
@@ -923,7 +943,7 @@ const Home: React.FC = () => {
         setIsPlaying(false);
         playNextRef.current();
       }
-    }, 30);
+    }, 60);
 
     return () => {
       window.clearInterval(timer);
@@ -1048,8 +1068,7 @@ const Home: React.FC = () => {
         knownSongKeys.add(songKey);
         const song: Song = {
           id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          title: getSongTitle(fileName),
-          artist: 'Hindi pa alam ang artist',
+          ...getSongMetadata(fileName),
           fileName,
           fileType,
           file,
@@ -1226,8 +1245,7 @@ const Home: React.FC = () => {
         knownSongKeys.add(songKey);
         const song: Song = {
           id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          title: getSongTitle(file.name),
-          artist: 'Hindi pa alam ang artist',
+          ...getSongMetadata(file.name),
           fileName: file.name,
           fileType: file.type,
           file,
@@ -1285,7 +1303,7 @@ const Home: React.FC = () => {
     mediaRef.current?.pause();
     if (mediaRef.current) mediaRef.current.currentTime = 0;
     setCurrentTime(0);
-    setIsPlaying(false);
+    playNext();
   };
 
   const saveAndSelectSoundFont = async (font: SoundFontData) => {
@@ -1385,18 +1403,28 @@ const Home: React.FC = () => {
   const activeLyricHighlight = midiLyricIndex >= 0
     ? getLyricHighlightIndex(isUpperLyricActive ? upperLyric : lowerLyric, currentTime)
     : 0;
+  const activeLyricText = isUpperLyricActive ? upperLyricText : lowerLyricText;
+  const activeLyricProgress = activeLyricText.length
+    ? Math.min(100, Math.max(0, activeLyricHighlight / activeLyricText.length * 100))
+    : 0;
+  const firstLyricTime = currentMidiSong?.lyrics[0]?.time ?? 0;
+  const showMidiIntro = Boolean(
+    currentMidiSong?.lyrics.length
+    && firstLyricTime > 0
+    && currentTime < firstLyricTime,
+  );
 
   useLayoutEffect(() => {
     const fitLyric = (element: HTMLSpanElement | null) => {
       const container = element?.parentElement;
       if (!element || !container) return;
       element.style.transform = 'none';
-      const textWidth = element.getBoundingClientRect().width;
-      const availableWidth = container.clientWidth;
+      const textWidth = element.scrollWidth;
+      const availableWidth = container.clientWidth - 8;
       const scale = textWidth > availableWidth && textWidth > 0
         ? availableWidth / textWidth
         : 1;
-      element.style.transform = `scaleX(${scale})`;
+      element.style.transform = `scale(${scale})`;
     };
     const fitBothLines = () => {
       fitLyric(activeLyricTextRef.current);
@@ -1405,8 +1433,14 @@ const Home: React.FC = () => {
 
     fitBothLines();
     window.addEventListener('resize', fitBothLines);
-    return () => window.removeEventListener('resize', fitBothLines);
-  }, [upperLyricText, lowerLyricText]);
+    const observer = new ResizeObserver(fitBothLines);
+    if (activeLyricTextRef.current) observer.observe(activeLyricTextRef.current.parentElement ?? activeLyricTextRef.current);
+    if (previewLyricTextRef.current) observer.observe(previewLyricTextRef.current.parentElement ?? previewLyricTextRef.current);
+    return () => {
+      window.removeEventListener('resize', fitBothLines);
+      observer.disconnect();
+    };
+  }, [upperLyricText, lowerLyricText, isUpperLyricActive]);
 
   const showBackgroundVideo = Boolean(backgroundVideoUrl && (!currentSong || !isVideoSong(currentSong)));
   const nextBackgroundVideo = () => {
@@ -1419,7 +1453,7 @@ const Home: React.FC = () => {
       <main className="karaoke-app cinema-layout">
         <div className="karaoke-shell">
           <header className="top-status">
-            <span className="song-counter">{currentSong ? `▶ ${formatTime(currentTime)}${Number.isFinite(duration) ? ` / ${formatTime(duration)}` : ''}` : `${songs.length} kanta${catalogTitles.length ? ` · ${catalogTitles.length.toLocaleString()} title-only` : ''}`}</span>
+            <span className="song-counter">{currentSong ? `▶ ${formatTime(currentTime)}${Number.isFinite(duration) ? ` / ${formatTime(duration)}` : ''}` : `${songs.length} kanta`}</span>
             <button className="import-button" onClick={() => fileInputRef.current?.click()} disabled={isImporting || !isLibraryReady} title="Mag-import ng kanta mula sa ZIP o audio/video file">
               {isImporting ? importProgress || 'Nag-i-import…' : isLibraryReady ? '＋ KANTA' : 'NAGLO-LOAD…'}
             </button>
@@ -1474,6 +1508,8 @@ const Home: React.FC = () => {
                 loop
                 muted
                 playsInline
+                preload="metadata"
+                disablePictureInPicture
                 aria-hidden="true"
                 onError={() => setError('Hindi ma-play ang background MP4. Subukang i-export ito bilang H.264 MP4.')}
               />
@@ -1486,7 +1522,10 @@ const Home: React.FC = () => {
                 playsInline
                 onEnded={playNext}
                 onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
-                onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+                onTimeUpdate={(event) => setCurrentTime((previousTime) => {
+                  const nextTime = event.currentTarget.currentTime;
+                  return Math.abs(nextTime - previousTime) >= 0.06 ? nextTime : previousTime;
+                })}
                 onPlay={() => setIsPlaying(true)}
                 onPause={() => { if (!isRotatingRef.current) setIsPlaying(false); }}
                 aria-label={`Karaoke video: ${currentSong.title}`}
@@ -1499,35 +1538,49 @@ const Home: React.FC = () => {
                 preload="auto"
                 onEnded={playNext}
                 onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
-                onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+                onTimeUpdate={(event) => setCurrentTime((previousTime) => {
+                  const nextTime = event.currentTarget.currentTime;
+                  return Math.abs(nextTime - previousTime) >= 0.06 ? nextTime : previousTime;
+                })}
                 onPlay={() => setIsPlaying(true)}
                 onPause={() => { if (!isRotatingRef.current) setIsPlaying(false); }}
                 aria-label={`Audio: ${currentSong.title}`}
               />
             )}
             <div className="water-glow" aria-hidden="true" />
-            <div className="title-block">
+            <div className={`title-block${showMidiIntro ? ' show-midi-intro' : ''}`}>
               {currentSong && isMidiSong(currentSong) ? (
                 <>
-                  {currentMidiSong?.lyrics.length ? (
+                  {currentMidiSong?.lyrics.length && showMidiIntro ? (
+                    <>
+                      <span className="line song-title">{currentSong.title}</span>
+                      <span className="line accent song-artist">Singer: {currentSong.artist}</span>
+                    </>
+                  ) : currentMidiSong?.lyrics.length ? (
                     <>
                       <span className={`line ${isUpperLyricActive ? 'active-line' : 'preview-line'}`}>
                         <span ref={isUpperLyricActive ? activeLyricTextRef : previewLyricTextRef} className="lyric-text">
                           {isUpperLyricActive ? (
-                            <>
-                              <span className="lyric-read">{upperLyricText.slice(0, activeLyricHighlight)}</span>
-                              <span className="lyric-unread">{upperLyricText.slice(activeLyricHighlight)}</span>
-                            </>
+                            <span className="lyric-progress">
+                              <span className="lyric-base">{upperLyricText}</span>
+                              <span
+                                className="lyric-blue"
+                                style={{ clipPath: `inset(0 ${100 - activeLyricProgress}% 0 0)` }}
+                              >{upperLyricText}</span>
+                            </span>
                           ) : upperLyricText}
                         </span>
                       </span>
                       <span className={`line accent ${isUpperLyricActive ? 'preview-line' : 'active-line'}`}>
                         <span ref={!isUpperLyricActive ? activeLyricTextRef : previewLyricTextRef} className="lyric-text">
                           {!isUpperLyricActive ? (
-                            <>
-                              <span className="lyric-read">{lowerLyricText.slice(0, activeLyricHighlight)}</span>
-                              <span className="lyric-unread">{lowerLyricText.slice(activeLyricHighlight)}</span>
-                            </>
+                            <span className="lyric-progress">
+                              <span className="lyric-base">{lowerLyricText}</span>
+                              <span
+                                className="lyric-blue"
+                                style={{ clipPath: `inset(0 ${100 - activeLyricProgress}% 0 0)` }}
+                              >{lowerLyricText}</span>
+                            </span>
                           ) : lowerLyricText}
                         </span>
                       </span>

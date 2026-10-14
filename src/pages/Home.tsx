@@ -1521,6 +1521,17 @@ const Home: React.FC = () => {
             <button className="import-button" onClick={() => fileInputRef.current?.click()} disabled={isImporting || !isLibraryReady} title="Mag-import ng kanta mula sa ZIP o audio/video file">
               {isImporting ? importProgress || 'Nag-i-import…' : isLibraryReady ? '＋ KANTA' : 'NAGLO-LOAD…'}
             </button>
+            {isNativeAndroid && (
+              <button
+                type="button"
+                className="import-button soundfont-import-top-button"
+                onClick={() => void pickNativeSoundFont()}
+                disabled={isImporting}
+                title="Mag-import ng SoundFont mula sa SF2 o ZIP"
+              >
+                {isImporting ? importProgress || 'NAGLO-LOAD…' : '＋ SF2/ZIP'}
+              </button>
+            )}
             <button
               type="button"
               className="settings-button"

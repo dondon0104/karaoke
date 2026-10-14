@@ -336,6 +336,11 @@ body {
   white-space: nowrap;
 }
 
+.soundfont-import-top-button {
+  border-color: rgba(72, 225, 238, 0.55);
+  background: rgba(25, 111, 128, 0.9);
+}
+
 .settings-button {
   flex: 0 0 34px;
   width: 34px;

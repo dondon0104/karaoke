@@ -5,6 +5,7 @@ import android.net.Uri;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import android.provider.OpenableColumns;
 import androidx.activity.result.ActivityResult;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -40,6 +41,11 @@ public class NativeFluidSynthPlugin extends Plugin {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {
+            "application/octet-stream",
+            "application/x-soundfont",
+            "audio/*"
+        });
         startActivityForResult(call, intent, "handleSoundFontResult");
     }
 
@@ -59,6 +65,10 @@ public class NativeFluidSynthPlugin extends Plugin {
             try (InputStream input = getContext().getContentResolver().openInputStream(uri);
                  FileOutputStream output = new FileOutputStream(target)) {
                 if (input == null) throw new java.io.IOException("Hindi mabuksan ang napiling file.");
+                String displayName = getDisplayName(uri);
+                if (displayName != null && !displayName.toLowerCase(java.util.Locale.ROOT).endsWith(".sf2")) {
+                    throw new java.io.IOException("Pumili ng file na nagtatapos sa .sf2.");
+                }
                 byte[] buffer = new byte[1024 * 1024];
                 int read;
                 while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
@@ -67,11 +77,30 @@ public class NativeFluidSynthPlugin extends Plugin {
                 }
                 com.getcapacitor.JSObject response = new com.getcapacitor.JSObject();
                 response.put("path", target.getAbsolutePath());
+                response.put("fileName", displayName == null ? "SoundFont.sf2" : displayName);
                 call.resolve(response);
             } catch (Exception exception) {
+                if (target.exists()) target.delete();
                 call.reject("Hindi ma-import ang SoundFont: " + exception.getMessage());
             }
         });
+    }
+
+    private String getDisplayName(Uri uri) {
+        try (android.database.Cursor cursor = getContext().getContentResolver().query(
+                uri,
+                new String[] { OpenableColumns.DISPLAY_NAME },
+                null,
+                null,
+                null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (index >= 0) return cursor.getString(index);
+            }
+        } catch (Exception ignored) {
+            // Some document providers do not expose a display name.
+        }
+        return null;
     }
 
     @com.getcapacitor.PluginMethod

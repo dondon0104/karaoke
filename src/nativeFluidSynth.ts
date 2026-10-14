@@ -2,7 +2,7 @@ import { registerPlugin } from '@capacitor/core';
 
 export interface NativeFluidSynthPlugin {
   loadSoundFont(options: { path: string }): Promise<void>;
-  pickAndLoadSoundFont(): Promise<{ path: string }>;
+  pickAndLoadSoundFont(): Promise<{ path: string; fileName: string }>;
   unload(): Promise<void>;
   noteOn(options: { channel: number; note: number; velocity: number }): Promise<void>;
   noteOff(options: { channel: number; note: number }): Promise<void>;

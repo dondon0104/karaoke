@@ -397,6 +397,8 @@ function formatTime(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${Math.floor(seconds % 60).toString().padStart(2, '0')}`;
 }
 
+const MIDI_LYRIC_SYNC_OFFSET = 0.5;
+
 function getMediaType(fileName: string): string {
   const extension = fileName.split('.').pop()?.toLowerCase() ?? '';
   return MIME_TYPES[extension] ?? 'application/octet-stream';
@@ -1389,8 +1391,11 @@ const Home: React.FC = () => {
 
   const queuedSongs = queue.map((id) => songs.find((song) => song.id === id)).filter((song): song is Song => Boolean(song));
   const currentMidiSong = midiSong?.songId === currentSong?.id ? midiSong : null;
+  const lyricTime = currentMidiSong
+    ? Math.max(0, currentTime - MIDI_LYRIC_SYNC_OFFSET)
+    : currentTime;
   const midiLyricIndex = currentMidiSong
-    ? currentMidiSong.lyrics.findLastIndex((lyric) => lyric.time <= currentTime)
+    ? currentMidiSong.lyrics.findLastIndex((lyric) => lyric.time <= lyricTime)
     : -1;
   const activeIndex = Math.max(0, midiLyricIndex);
   const isUpperLyricActive = activeIndex % 2 === 0;
@@ -1401,18 +1406,25 @@ const Home: React.FC = () => {
   const upperLyricText = upperLyric?.text ?? currentMidiSong?.lyrics[0].text ?? '';
   const lowerLyricText = lowerLyric?.text ?? '';
   const activeLyricHighlight = midiLyricIndex >= 0
-    ? getLyricHighlightIndex(isUpperLyricActive ? upperLyric : lowerLyric, currentTime)
+    ? getLyricHighlightIndex(isUpperLyricActive ? upperLyric : lowerLyric, lyricTime)
     : 0;
   const activeLyricText = isUpperLyricActive ? upperLyricText : lowerLyricText;
   const activeLyricProgress = activeLyricText.length
     ? Math.min(100, Math.max(0, activeLyricHighlight / activeLyricText.length * 100))
     : 0;
   const firstLyricTime = currentMidiSong?.lyrics[0]?.time ?? 0;
+  const firstLyricLeadIn = 3;
   const showMidiIntro = Boolean(
     currentMidiSong?.lyrics.length
-    && firstLyricTime > 0
-    && currentTime < firstLyricTime,
+    && firstLyricTime > firstLyricLeadIn
+    && lyricTime < firstLyricTime - firstLyricLeadIn,
   );
+  const lyricCountIn = currentMidiSong?.lyrics.length
+    && firstLyricTime > firstLyricLeadIn
+    && lyricTime >= firstLyricTime - firstLyricLeadIn
+    && lyricTime < firstLyricTime
+    ? Math.ceil(firstLyricTime - lyricTime)
+    : null;
 
   useLayoutEffect(() => {
     const fitLyric = (element: HTMLSpanElement | null) => {
@@ -1612,6 +1624,9 @@ const Home: React.FC = () => {
                 </>
               )}
             </div>
+            {lyricCountIn !== null && (
+              <span className="song-countdown-inline" aria-live="assertive">{lyricCountIn}</span>
+            )}
             {currentSong && Number.isFinite(duration) && (
               <div className="video-progress" aria-label={`Playback ${formatTime(currentTime)} of ${formatTime(duration)}`}>
                 <span style={{ width: `${duration ? Math.min(100, currentTime / duration * 100) : 0}%` }} />

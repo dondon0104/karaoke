@@ -74,6 +74,7 @@ const DATABASE_NAME = 'home-karaoke-library';
 const STORE_NAME = 'songs';
 const SOUND_FONT_STORE_NAME = 'soundfonts';
 const ACTIVE_SOUND_FONT_KEY = 'home-karaoke-active-soundfont';
+const ACTIVE_NATIVE_SOUND_FONT_KEY = 'home-karaoke-native-soundfont';
 const BACKGROUND_VIDEO_STORE_NAME = 'backgroundVideos';
 const CATALOG_TITLE_STORE_NAME = 'catalogTitles';
 const FORMAT_PATTERN = /\.(mp3|wav|ogg|m4a|aac|flac|mid|midi|kar|sf2|mp4|webm|mov|m4v)$/i;
@@ -624,8 +625,26 @@ const Home: React.FC = () => {
         void Promise.all([readSoundFont(), readBackgroundVideos(), readCatalogTitles()])
           .then(([soundFontResult, loadedBackgroundVideos, loadedCatalogTitles]) => {
             if (!isMounted) return;
-            setSoundFonts(soundFontResult.soundFonts);
-            setSoundFont(soundFontResult.soundFont);
+            let loadedSoundFonts = soundFontResult.soundFonts;
+            let loadedSoundFont = soundFontResult.soundFont;
+            if (isNativeAndroid) {
+              try {
+                const nativeFileName = localStorage.getItem(ACTIVE_NATIVE_SOUND_FONT_KEY);
+                if (nativeFileName) {
+                  const nativeFont: SoundFontData = {
+                    id: 'native-sf2',
+                    fileName: nativeFileName,
+                    buffer: new ArrayBuffer(0),
+                  };
+                  loadedSoundFonts = [...loadedSoundFonts.filter((font) => font.id !== nativeFont.id), nativeFont];
+                  loadedSoundFont = nativeFont;
+                }
+              } catch {
+                // The native engine remains available even if browser storage is unavailable.
+              }
+            }
+            setSoundFonts(loadedSoundFonts);
+            setSoundFont(loadedSoundFont);
             setBackgroundVideos(loadedBackgroundVideos);
             setCatalogTitles(loadedCatalogTitles);
             if (soundFontResult.needsReimport) {
@@ -1372,7 +1391,15 @@ const Home: React.FC = () => {
   const removeSavedSoundFont = async (font: SoundFontData) => {
     if (!window.confirm(`Alisin ang SoundFont na ${font.fileName}?`)) return;
     try {
-      await deleteSoundFont(font.id);
+      if (font.id === 'native-sf2') {
+        try {
+          localStorage.removeItem(ACTIVE_NATIVE_SOUND_FONT_KEY);
+        } catch {
+          // The native file can still be replaced even if browser storage is unavailable.
+        }
+      } else {
+        await deleteSoundFont(font.id);
+      }
       const remaining = soundFonts.filter((item) => item.id !== font.id);
       setSoundFonts(remaining);
       if (soundFont?.id === font.id) {
@@ -1430,7 +1457,20 @@ const Home: React.FC = () => {
     setIsImporting(true);
     setImportProgress('Pumili ng SoundFont…');
     try {
-      await NativeFluidSynth.pickAndLoadSoundFont();
+      const result = await NativeFluidSynth.pickAndLoadSoundFont();
+      const nativeFont: SoundFontData = {
+        id: 'native-sf2',
+        fileName: result.fileName,
+        buffer: new ArrayBuffer(0),
+      };
+      setSoundFonts((current) => [...current.filter((font) => font.id !== nativeFont.id), nativeFont]);
+      setSoundFont(nativeFont);
+      try {
+        localStorage.setItem(ACTIVE_NATIVE_SOUND_FONT_KEY, result.fileName);
+        localStorage.setItem(ACTIVE_SOUND_FONT_KEY, nativeFont.id);
+      } catch {
+        // Native loading succeeded even if browser storage is unavailable.
+      }
       setIsNativeMidiReady(true);
       setImportProgress('Native Android SoundFont handa');
     } catch (importError: unknown) {

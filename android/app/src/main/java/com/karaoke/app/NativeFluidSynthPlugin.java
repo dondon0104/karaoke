@@ -67,14 +67,18 @@ public class NativeFluidSynthPlugin extends Plugin {
             File target = new File(getContext().getFilesDir(), "active-soundfont.sf2");
             try {
                 String displayName = getDisplayName(uri);
-                if (displayName == null) {
-                    displayName = "SoundFont.sf2";
-                }
+                String responseFileName = displayName == null ? "SoundFont.sf2" : displayName;
+                if (displayName == null) displayName = "";
                 String lowerName = displayName.toLowerCase(java.util.Locale.ROOT);
+                String mimeType = getContext().getContentResolver().getType(uri);
+                boolean isZip = lowerName.endsWith(".zip")
+                    || "application/zip".equalsIgnoreCase(mimeType)
+                    || "application/x-zip-compressed".equalsIgnoreCase(mimeType)
+                    || isZipContent(uri);
                 String loadedFileName;
                 try (InputStream input = getContext().getContentResolver().openInputStream(uri)) {
                     if (input == null) throw new java.io.IOException("Hindi mabuksan ang napiling file.");
-                    if (lowerName.endsWith(".zip")) {
+                    if (isZip) {
                         loadedFileName = extractSoundFontFromZip(input, target);
                     } else if (lowerName.endsWith(".sf2")) {
                         copyToFile(input, target);
@@ -88,11 +92,15 @@ public class NativeFluidSynthPlugin extends Plugin {
                 }
                 com.getcapacitor.JSObject response = new com.getcapacitor.JSObject();
                 response.put("path", target.getAbsolutePath());
-                response.put("fileName", loadedFileName);
+                response.put("fileName", loadedFileName == null ? responseFileName : loadedFileName);
                 call.resolve(response);
             } catch (Exception exception) {
                 if (target.exists()) target.delete();
-                call.reject("Hindi ma-import ang SoundFont: " + exception.getMessage());
+                String message = exception.getMessage();
+                call.reject("Hindi ma-import ang SoundFont: " + (message == null ? "Hindi mabasa ang napiling file." : message));
+            } catch (UnsatisfiedLinkError error) {
+                if (target.exists()) target.delete();
+                call.reject("Hindi available ang native audio engine sa APK na ito. Mag-download ng bagong APK.");
             }
         });
     }
@@ -119,6 +127,15 @@ public class NativeFluidSynthPlugin extends Plugin {
             }
         }
         throw new java.io.IOException("Walang .sf2 SoundFont sa loob ng ZIP.");
+    }
+
+    private boolean isZipContent(Uri uri) {
+        try (InputStream input = getContext().getContentResolver().openInputStream(uri)) {
+            if (input == null) return false;
+            return input.read() == 'P' && input.read() == 'K' && input.read() == 3 && input.read() == 4;
+        } catch (java.io.IOException exception) {
+            return false;
+        }
     }
 
     private String getDisplayName(Uri uri) {

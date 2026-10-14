@@ -5,6 +5,8 @@ import android.net.Uri;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 import android.provider.OpenableColumns;
 import androidx.activity.result.ActivityResult;
 import com.getcapacitor.Plugin;
@@ -44,6 +46,7 @@ public class NativeFluidSynthPlugin extends Plugin {
         intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {
             "application/octet-stream",
             "application/x-soundfont",
+            "application/zip",
             "audio/*"
         });
         startActivityForResult(call, intent, "handleSoundFontResult");
@@ -62,28 +65,60 @@ public class NativeFluidSynthPlugin extends Plugin {
         }
         getBridge().execute(() -> {
             File target = new File(getContext().getFilesDir(), "active-soundfont.sf2");
-            try (InputStream input = getContext().getContentResolver().openInputStream(uri);
-                 FileOutputStream output = new FileOutputStream(target)) {
-                if (input == null) throw new java.io.IOException("Hindi mabuksan ang napiling file.");
+            try {
                 String displayName = getDisplayName(uri);
-                if (displayName != null && !displayName.toLowerCase(java.util.Locale.ROOT).endsWith(".sf2")) {
-                    throw new java.io.IOException("Pumili ng file na nagtatapos sa .sf2.");
+                if (displayName == null) {
+                    displayName = "SoundFont.sf2";
                 }
-                byte[] buffer = new byte[1024 * 1024];
-                int read;
-                while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
+                String lowerName = displayName.toLowerCase(java.util.Locale.ROOT);
+                String loadedFileName;
+                try (InputStream input = getContext().getContentResolver().openInputStream(uri)) {
+                    if (input == null) throw new java.io.IOException("Hindi mabuksan ang napiling file.");
+                    if (lowerName.endsWith(".zip")) {
+                        loadedFileName = extractSoundFontFromZip(input, target);
+                    } else if (lowerName.endsWith(".sf2")) {
+                        copyToFile(input, target);
+                        loadedFileName = displayName;
+                    } else {
+                        throw new java.io.IOException("Pumili ng .sf2 file o ZIP na may laman na .sf2.");
+                    }
+                }
                 if (!synth.loadSoundFont(target.getAbsolutePath())) {
                     throw new java.io.IOException("Hindi ma-load ang SoundFont sa native audio engine.");
                 }
                 com.getcapacitor.JSObject response = new com.getcapacitor.JSObject();
                 response.put("path", target.getAbsolutePath());
-                response.put("fileName", displayName == null ? "SoundFont.sf2" : displayName);
+                response.put("fileName", loadedFileName);
                 call.resolve(response);
             } catch (Exception exception) {
                 if (target.exists()) target.delete();
                 call.reject("Hindi ma-import ang SoundFont: " + exception.getMessage());
             }
         });
+    }
+
+    private void copyToFile(InputStream input, File target) throws java.io.IOException {
+        try (FileOutputStream output = new FileOutputStream(target)) {
+            byte[] buffer = new byte[1024 * 1024];
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                output.write(buffer, 0, read);
+            }
+        }
+    }
+
+    private String extractSoundFontFromZip(InputStream input, File target) throws java.io.IOException {
+        try (ZipInputStream zipInput = new ZipInputStream(input)) {
+            ZipEntry entry;
+            while ((entry = zipInput.getNextEntry()) != null) {
+                if (entry.isDirectory()) continue;
+                String entryName = entry.getName();
+                if (!entryName.toLowerCase(java.util.Locale.ROOT).endsWith(".sf2")) continue;
+                copyToFile(zipInput, target);
+                return entryName.substring(entryName.lastIndexOf('/') + 1);
+            }
+        }
+        throw new java.io.IOException("Walang .sf2 SoundFont sa loob ng ZIP.");
     }
 
     private String getDisplayName(Uri uri) {

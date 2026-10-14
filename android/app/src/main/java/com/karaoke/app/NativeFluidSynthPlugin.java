@@ -8,6 +8,8 @@ import java.io.InputStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import android.provider.OpenableColumns;
+import android.app.ActivityManager;
+import android.os.StatFs;
 import androidx.activity.result.ActivityResult;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -87,6 +89,7 @@ public class NativeFluidSynthPlugin extends Plugin {
                         throw new java.io.IOException("Pumili ng .sf2 file o ZIP na may laman na .sf2.");
                     }
                 }
+                validateNativeLoadResources(target);
                 if (!synth.loadSoundFont(target.getAbsolutePath())) {
                     throw new java.io.IOException("Hindi ma-load ang SoundFont sa native audio engine.");
                 }
@@ -103,6 +106,24 @@ public class NativeFluidSynthPlugin extends Plugin {
                 call.reject("Hindi available ang native audio engine sa APK na ito. Mag-download ng bagong APK.");
             }
         });
+    }
+
+    private void validateNativeLoadResources(File target) throws java.io.IOException {
+        long requiredBytes = target.length();
+        StatFs storage = new StatFs(getContext().getFilesDir().getAbsolutePath());
+        long availableStorage = storage.getAvailableBytes();
+        if (availableStorage < requiredBytes + 256L * 1024L * 1024L) {
+            throw new java.io.IOException("Kulang ang phone storage para sa SoundFont. Kailangan pa ng humigit-kumulang "
+                + ((requiredBytes + 256L * 1024L * 1024L) / (1024L * 1024L * 1024L)) + " GB na bakanteng storage.");
+        }
+        ActivityManager.MemoryInfo memoryInfo = new ActivityManager.MemoryInfo();
+        ActivityManager activityManager = (ActivityManager) getContext().getSystemService(android.content.Context.ACTIVITY_SERVICE);
+        if (activityManager != null) activityManager.getMemoryInfo(memoryInfo);
+        long minimumMemory = requiredBytes + 512L * 1024L * 1024L;
+        if (memoryInfo != null && memoryInfo.availMem < minimumMemory) {
+            throw new java.io.IOException("Kulang ang available RAM ng phone para i-load ang "
+                + (requiredBytes / (1024L * 1024L * 1024L)) + " GB SoundFont. Isara muna ang ibang apps o gumamit ng mas maliit na SoundFont.");
+        }
     }
 
     private void copyToFile(InputStream input, File target) throws java.io.IOException {

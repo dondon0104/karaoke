@@ -4,6 +4,7 @@ const MEDIA_FILE_PATTERN = /\.(mp3|wav|ogg|m4a|aac|flac|mid|midi|kar|mp4|webm|mo
 const SOUNDFONT_FILE_PATTERN = /\.sf2$/i;
 const BACKGROUND_VIDEO_FILE_PATTERN = /\.(mp4|webm|mov|m4v)$/i;
 const SHUBIDX_FILE_NAME = 'shubidx';
+const MAX_SOUNDFONT_BYTES = 64 * 1024 * 1024;
 
 function readUtf8Character(bytes: Uint8Array, offset: number): { character: string; length: number } | null {
   const firstByte = bytes[offset];
@@ -154,13 +155,22 @@ const unzip = new Unzip((file) => {
   activeFiles.add(file.name);
   const chunks: SongChunk[] = [];
   const transferables = new Set<ArrayBuffer>();
+  let byteLength = 0;
   file.ondata = (error, chunk, final) => {
+    if (failed) return;
     if (error) {
       reportError(`Hindi ma-unzip ang ${file.name}: ${error.message}`);
       return;
     }
 
     if (chunk.length) {
+      if (isSoundFont) {
+        byteLength += chunk.byteLength;
+        if (byteLength > MAX_SOUNDFONT_BYTES) {
+          reportError(`${file.name} ay mas malaki sa 64 MB at hindi ligtas i-import sa mobile.`);
+          return;
+        }
+      }
       const buffer = chunk.buffer as ArrayBuffer;
       chunks.push({
         buffer,

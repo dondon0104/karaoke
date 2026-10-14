@@ -5,7 +5,9 @@ import { Midi } from '@tonejs/midi';
 import { parseMidi } from 'midi-file';
 import type { MidiEvent } from 'midi-file';
 import { WorkletSynthesizer } from 'spessasynth_lib';
+import { Capacitor } from '@capacitor/core';
 import soundFontProcessorUrl from 'spessasynth_lib/dist/spessasynth_processor.min.js?url';
+import { NativeFluidSynth } from '../nativeFluidSynth';
 import './Home.css';
 
 interface Song {
@@ -75,6 +77,8 @@ const ACTIVE_SOUND_FONT_KEY = 'home-karaoke-active-soundfont';
 const BACKGROUND_VIDEO_STORE_NAME = 'backgroundVideos';
 const CATALOG_TITLE_STORE_NAME = 'catalogTitles';
 const FORMAT_PATTERN = /\.(mp3|wav|ogg|m4a|aac|flac|mid|midi|kar|sf2|mp4|webm|mov|m4v)$/i;
+const MAX_MOBILE_SOUNDFONT_BYTES = 64 * 1024 * 1024;
+const MAX_DESKTOP_SOUNDFONT_BYTES = 256 * 1024 * 1024;
 const MIME_TYPES: Record<string, string> = {
   aac: 'audio/aac',
   flac: 'audio/flac',
@@ -117,6 +121,25 @@ function openSongDatabase(): Promise<IDBDatabase> {
 
 function getSoundFontId(fileName: string, size: number): string {
   return `sf2:${fileName.toLocaleLowerCase()}:${size}`;
+}
+
+function getSoundFontSizeLimit(): number {
+  const deviceMemory = 'deviceMemory' in navigator
+    ? Number((navigator as Navigator & { deviceMemory?: number }).deviceMemory)
+    : Number.NaN;
+  const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+  return isMobile || (Number.isFinite(deviceMemory) && deviceMemory <= 4)
+    ? MAX_MOBILE_SOUNDFONT_BYTES
+    : MAX_DESKTOP_SOUNDFONT_BYTES;
+}
+
+function validateSoundFontSize(fileName: string, size: number): void {
+  const limit = getSoundFontSizeLimit();
+  if (size > limit) {
+    throw new Error(
+      `${fileName} ay ${(size / 1024 / 1024).toFixed(1)} MB. Sa mobile, hanggang ${limit / 1024 / 1024} MB lang muna ang SoundFont para hindi magsara ang app dahil sa memory.`,
+    );
+  }
 }
 
 async function readSoundFont(): Promise<SoundFontLoadResult> {
@@ -533,6 +556,7 @@ const Home: React.FC = () => {
   const [soundFonts, setSoundFonts] = useState<SoundFontData[]>([]);
   const [soundFont, setSoundFont] = useState<SoundFontData | null>(null);
   const [isMidiSynthReady, setIsMidiSynthReady] = useState(false);
+  const [isNativeMidiReady, setIsNativeMidiReady] = useState(false);
   const [error, setError] = useState('');
   const [isImporting, setIsImporting] = useState(false);
   const [isLibraryReady, setIsLibraryReady] = useState(false);
@@ -560,6 +584,7 @@ const Home: React.FC = () => {
   const playNextRef = useRef<() => void>(() => {});
   const isPlayingRef = useRef(false);
   const isRotatingRef = useRef(false);
+  const isNativeAndroid = Capacitor.getPlatform() === 'android';
 
   useEffect(() => {
     isPlayingRef.current = isPlaying;
@@ -736,6 +761,7 @@ const Home: React.FC = () => {
   const visibleCatalogTitles = matchingCatalogTitles.slice(0, visibleSongLimit);
 
   const unlockMidiAudio = useCallback(async () => {
+    if (isNativeAndroid) return;
     const AudioContextConstructor = window.AudioContext;
     if (!AudioContextConstructor) {
       setError('Hindi suportado ng browser ang MIDI audio. Gumamit ng updated na Chrome o Edge.');
@@ -797,19 +823,13 @@ const Home: React.FC = () => {
         ? `Hindi ma-load ang SoundFont o MIDI audio: ${audioError.message}`
         : 'Hindi ma-load ang SoundFont o MIDI audio.');
     }
-  }, [soundFont]);
-
-  useEffect(() => {
-    if (soundFont && currentSong && isMidiSong(currentSong) && isPlaying) {
-      void unlockMidiAudio();
-    }
-  }, [currentSong, isPlaying, soundFont, unlockMidiAudio]);
+  }, [isNativeAndroid, soundFont]);
 
   const playSong = useCallback((song: Song, remainingQueue?: string[]) => {
     setError('');
     setDuration(Number.NaN);
     setCurrentTime(0);
-    if (isMidiSong(song)) unlockMidiAudio();
+    if (isMidiSong(song) && !isNativeAndroid) unlockMidiAudio();
     setCurrentSong((previousSong) => {
       if (previousSong?.id !== song.id) historyRef.current = [...historyRef.current, song].slice(-30);
       return song;
@@ -818,7 +838,7 @@ const Home: React.FC = () => {
     setIsPlaying(true);
     setSearchOpen(false);
     setQueueOpen(false);
-  }, [unlockMidiAudio]);
+  }, [isNativeAndroid, unlockMidiAudio]);
 
   const playNext = useCallback(() => {
     const [nextId, ...remainingQueue] = queue;
@@ -843,6 +863,7 @@ const Home: React.FC = () => {
       return;
     }
     const synthesizer = midiSynthRef.current;
+    if (isNativeAndroid && !isNativeMidiReady) return;
     if (soundFont && (!synthesizer || !isMidiSynthReady)) return;
 
     const AudioContextConstructor = window.AudioContext;
@@ -875,22 +896,29 @@ const Home: React.FC = () => {
     let nextEventIndex = firstRemainingEvent < 0 ? midiSong.events.length : firstRemainingEvent;
 
     const sendMidiEvent = (event: MidiPlaybackEvent, eventTime: number, transpose: boolean) => {
-      if (!synthesizer) return;
+      if (!synthesizer && !isNativeAndroid) return;
       const eventOptions = { time: eventTime };
       if (event.type === 'noteOn') {
         const note = event.channel === 9 ? event.note : Math.max(0, Math.min(127, event.note + (transpose ? keyValue : 0)));
-        if (event.velocity === 0) synthesizer.noteOff(event.channel, note, eventOptions);
-        else synthesizer.noteOn(event.channel, note, event.velocity, eventOptions);
+        if (isNativeAndroid) {
+          if (event.velocity === 0) void NativeFluidSynth.noteOff({ channel: event.channel, note });
+          else void NativeFluidSynth.noteOn({ channel: event.channel, note, velocity: event.velocity });
+        } else if (event.velocity === 0) synthesizer?.noteOff(event.channel, note, eventOptions);
+        else synthesizer?.noteOn(event.channel, note, event.velocity, eventOptions);
       } else if (event.type === 'noteOff') {
         const note = event.channel === 9 ? event.note : Math.max(0, Math.min(127, event.note + (transpose ? keyValue : 0)));
-        synthesizer.noteOff(event.channel, note, eventOptions);
+        if (isNativeAndroid) void NativeFluidSynth.noteOff({ channel: event.channel, note });
+        else synthesizer?.noteOff(event.channel, note, eventOptions);
       } else if (event.type === 'programChange') {
-        synthesizer.programChange(event.channel, event.program, eventOptions);
+        if (isNativeAndroid) void NativeFluidSynth.programChange({ channel: event.channel, program: event.program });
+        else synthesizer?.programChange(event.channel, event.program, eventOptions);
       } else if (event.type === 'controller') {
-        synthesizer.sendMessage([0xb0 + event.channel, event.controller, event.value], 0, eventOptions);
+        if (isNativeAndroid) void NativeFluidSynth.controlChange({ channel: event.channel, controller: event.controller, value: event.value });
+        else synthesizer?.sendMessage([0xb0 + event.channel, event.controller, event.value], 0, eventOptions);
       } else if (event.type === 'pitchBend') {
         const bend = Math.max(0, Math.min(16383, event.value + 8192));
-        synthesizer.sendMessage([0xe0 + event.channel, bend & 0x7f, bend >> 7], 0, eventOptions);
+        if (isNativeAndroid) void NativeFluidSynth.pitchBend({ channel: event.channel, value: bend });
+        else synthesizer?.sendMessage([0xe0 + event.channel, bend & 0x7f, bend >> 7], 0, eventOptions);
       }
     };
 
@@ -902,7 +930,7 @@ const Home: React.FC = () => {
           sendMidiEvent(event, context.currentTime, false);
         }
       }
-    } else {
+    } else if (!isNativeAndroid) {
       midiNodesRef.current = midiSong.notes
         .filter((note) => note.time + note.duration > startOffset)
         .map((note) => {
@@ -966,7 +994,7 @@ const Home: React.FC = () => {
       synthesizer?.stopAll(true);
       void context.suspend();
     };
-  }, [currentSong, isMidiSynthReady, isPlaying, keyValue, midiSong, soundFont, tempo, volume]);
+  }, [currentSong, isMidiSynthReady, isNativeAndroid, isNativeMidiReady, isPlaying, keyValue, midiSong, soundFont, tempo, volume]);
 
   const playPrevious = () => {
     historyRef.current.pop();
@@ -1089,6 +1117,14 @@ const Home: React.FC = () => {
         if (!Number.isSafeInteger(byteLength) || byteLength === 0) {
           finishWithError(`Walang laman o hindi wasto ang ${result.type === 'soundfont' ? 'SoundFont' : 'background video'} na ${fileName}.`);
           return;
+        }
+        if (result.type === 'soundfont') {
+          try {
+            validateSoundFontSize(fileName, byteLength);
+          } catch (sizeError: unknown) {
+            finishWithError(sizeError instanceof Error ? sizeError.message : `Masyadong malaki ang SoundFont na ${fileName}.`);
+            return;
+          }
         }
         const fileBuffer = new Uint8Array(byteLength);
         let offset = 0;
@@ -1228,13 +1264,13 @@ const Home: React.FC = () => {
         }
 
         if (/\.sf2$/i.test(file.name)) {
+          validateSoundFontSize(file.name, file.size);
           const importedSoundFont: SoundFontData = {
             id: getSoundFontId(file.name, file.size),
             fileName: file.name,
             buffer: await file.arrayBuffer(),
           };
           await saveAndSelectSoundFont(importedSoundFont);
-          if (currentSong && isMidiSong(currentSong)) void unlockMidiAudio();
           setImportProgress(`SoundFont handa · ${file.name}`);
           continue;
         }
@@ -1374,15 +1410,31 @@ const Home: React.FC = () => {
           throw new Error(`${file.name} ay hindi .sf2 SoundFont file.`);
         }
         setImportProgress(`Ini-import ang SoundFont ${file.name}…`);
+        validateSoundFontSize(file.name, file.size);
         await saveAndSelectSoundFont({
           id: getSoundFontId(file.name, file.size),
           fileName: file.name,
           buffer: await file.arrayBuffer(),
         });
       }
-      if (currentSong && isMidiSong(currentSong)) void unlockMidiAudio();
     } catch (importError: unknown) {
       setError(importError instanceof Error ? importError.message : 'Hindi na-import ang SoundFont.');
+    } finally {
+      setIsImporting(false);
+      window.setTimeout(() => setImportProgress(''), 2500);
+    }
+  };
+
+  const pickNativeSoundFont = async () => {
+    setError('');
+    setIsImporting(true);
+    setImportProgress('Pumili ng SoundFont…');
+    try {
+      await NativeFluidSynth.pickAndLoadSoundFont();
+      setIsNativeMidiReady(true);
+      setImportProgress('Native Android SoundFont handa');
+    } catch (importError: unknown) {
+      setError(importError instanceof Error ? importError.message : 'Hindi ma-import ang SoundFont sa Android.');
     } finally {
       setIsImporting(false);
       window.setTimeout(() => setImportProgress(''), 2500);
@@ -1749,7 +1801,10 @@ const Home: React.FC = () => {
               <button
                 type="button"
                 className="settings-import-button"
-                onClick={() => soundFontInputRef.current?.click()}
+                onClick={() => {
+                  if (isNativeAndroid) void pickNativeSoundFont();
+                  else soundFontInputRef.current?.click();
+                }}
                 disabled={isImporting}
               >
                 {isImporting ? importProgress || 'Ini-import…' : '＋ Mag-import ng .SF2 o ZIP'}

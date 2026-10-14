@@ -10,6 +10,7 @@ import java.util.zip.ZipInputStream;
 import android.provider.OpenableColumns;
 import android.app.ActivityManager;
 import android.os.StatFs;
+import android.widget.Toast;
 import androidx.activity.result.ActivityResult;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -55,7 +56,7 @@ public class NativeFluidSynthPlugin extends Plugin {
     }
 
     @ActivityCallback
-    private void handleSoundFontResult(PluginCall call, ActivityResult result) {
+    public void handleSoundFontResult(PluginCall call, ActivityResult result) {
         if (result.getResultCode() != android.app.Activity.RESULT_OK || result.getData() == null) {
             call.reject("Hindi pumili ng SoundFont.");
             return;
@@ -65,6 +66,7 @@ public class NativeFluidSynthPlugin extends Plugin {
             call.reject("Walang napiling SoundFont file.");
             return;
         }
+        showStatus("Binabasa ang napiling SoundFont...");
         getBridge().execute(() -> {
             File target = new File(getContext().getFilesDir(), "active-soundfont.sf2");
             try {
@@ -97,15 +99,25 @@ public class NativeFluidSynthPlugin extends Plugin {
                 response.put("path", target.getAbsolutePath());
                 response.put("fileName", loadedFileName == null ? responseFileName : loadedFileName);
                 call.resolve(response);
+                showStatus("SoundFont handa na.");
             } catch (Exception exception) {
                 if (target.exists()) target.delete();
                 String message = exception.getMessage();
-                call.reject("Hindi ma-import ang SoundFont: " + (message == null ? "Hindi mabasa ang napiling file." : message));
+                String errorMessage = message == null ? "Hindi mabasa ang napiling file." : message;
+                call.reject("Hindi ma-import ang SoundFont: " + errorMessage);
+                showStatus("Hindi ma-import: " + errorMessage);
             } catch (UnsatisfiedLinkError error) {
                 if (target.exists()) target.delete();
                 call.reject("Hindi available ang native audio engine sa APK na ito. Mag-download ng bagong APK.");
+                showStatus("Walang native audio engine sa APK.");
             }
         });
+    }
+
+    private void showStatus(String message) {
+        getBridge().executeOnMainThread(() ->
+            Toast.makeText(getContext(), message, Toast.LENGTH_LONG).show()
+        );
     }
 
     private void validateNativeLoadResources(File target) throws java.io.IOException {

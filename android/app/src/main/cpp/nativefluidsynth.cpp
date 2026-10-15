@@ -11,6 +11,14 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_com_karaoke_app_NativeFluidSynth_nativeLoadSoundFont(JNIEnv *env, jobject, jstring path) {
     const char *soundFontPath = env->GetStringUTFChars(path, nullptr);
     std::lock_guard<std::mutex> lock(synthMutex);
+    if (synth) {
+        delete_fluid_synth(synth);
+        synth = nullptr;
+    }
+    if (settings) {
+        delete_fluid_settings(settings);
+        settings = nullptr;
+    }
     if (!settings) {
         settings = new_fluid_settings();
         fluid_settings_setnum(settings, "synth.sample-rate", 44100.0);

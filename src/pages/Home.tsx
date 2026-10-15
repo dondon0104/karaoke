@@ -56,6 +56,7 @@ interface SoundFontData {
   id: string;
   fileName: string;
   buffer: ArrayBuffer;
+  nativePath?: string;
 }
 
 interface SoundFontLoadResult {
@@ -75,6 +76,7 @@ const STORE_NAME = 'songs';
 const SOUND_FONT_STORE_NAME = 'soundfonts';
 const ACTIVE_SOUND_FONT_KEY = 'home-karaoke-active-soundfont';
 const ACTIVE_NATIVE_SOUND_FONT_KEY = 'home-karaoke-native-soundfont';
+const NATIVE_SOUND_FONTS_KEY = 'home-karaoke-native-soundfonts';
 const BACKGROUND_VIDEO_STORE_NAME = 'backgroundVideos';
 const CATALOG_TITLE_STORE_NAME = 'catalogTitles';
 const FORMAT_PATTERN = /\.(mp3|wav|ogg|m4a|aac|flac|mid|midi|kar|sf2|mp4|webm|mov|m4v)$/i;
@@ -629,15 +631,13 @@ const Home: React.FC = () => {
             let loadedSoundFont = soundFontResult.soundFont;
             if (isNativeAndroid) {
               try {
-                const nativeFileName = localStorage.getItem(ACTIVE_NATIVE_SOUND_FONT_KEY);
-                if (nativeFileName) {
-                  const nativeFont: SoundFontData = {
-                    id: 'native-sf2',
-                    fileName: nativeFileName,
-                    buffer: new ArrayBuffer(0),
-                  };
-                  loadedSoundFonts = [...loadedSoundFonts.filter((font) => font.id !== nativeFont.id), nativeFont];
-                  loadedSoundFont = nativeFont;
+                const nativeFonts = JSON.parse(localStorage.getItem(NATIVE_SOUND_FONTS_KEY) ?? '[]') as Array<{ id: string; fileName: string; path: string }>;
+                const nativeRecords = nativeFonts.map((font) => ({ ...font, nativePath: font.path, buffer: new ArrayBuffer(0) }));
+                loadedSoundFonts = [...loadedSoundFonts, ...nativeRecords];
+                const activeNativeId = localStorage.getItem(ACTIVE_NATIVE_SOUND_FONT_KEY);
+                loadedSoundFont = nativeRecords.find((font) => font.id === activeNativeId) ?? loadedSoundFont ?? nativeRecords[0] ?? null;
+                if (loadedSoundFont?.nativePath) {
+                  void NativeFluidSynth.loadSoundFont({ path: loadedSoundFont.nativePath });
                 }
               } catch {
                 // The native engine remains available even if browser storage is unavailable.
@@ -1378,7 +1378,13 @@ const Home: React.FC = () => {
 
   const chooseSoundFont = (font: SoundFontData) => {
     try {
+      if (font.nativePath) {
+        void NativeFluidSynth.loadSoundFont({ path: font.nativePath }).catch((loadError: unknown) => {
+          setError(loadError instanceof Error ? loadError.message : `Hindi ma-load ang ${font.fileName}.`);
+        });
+      }
       localStorage.setItem(ACTIVE_SOUND_FONT_KEY, font.id);
+      if (font.nativePath) localStorage.setItem(ACTIVE_NATIVE_SOUND_FONT_KEY, font.id);
       setSoundFont(font);
       setError('');
     } catch (storageError: unknown) {
@@ -1391,9 +1397,11 @@ const Home: React.FC = () => {
   const removeSavedSoundFont = async (font: SoundFontData) => {
     if (!window.confirm(`Alisin ang SoundFont na ${font.fileName}?`)) return;
     try {
-      if (font.id === 'native-sf2') {
+      if (font.nativePath) {
         try {
-          localStorage.removeItem(ACTIVE_NATIVE_SOUND_FONT_KEY);
+          const nativeFonts = JSON.parse(localStorage.getItem(NATIVE_SOUND_FONTS_KEY) ?? '[]') as Array<{ id: string; fileName: string; path: string }>;
+          localStorage.setItem(NATIVE_SOUND_FONTS_KEY, JSON.stringify(nativeFonts.filter((item) => item.id !== font.id)));
+          if (localStorage.getItem(ACTIVE_NATIVE_SOUND_FONT_KEY) === font.id) localStorage.removeItem(ACTIVE_NATIVE_SOUND_FONT_KEY);
         } catch {
           // The native file can still be replaced even if browser storage is unavailable.
         }
@@ -1459,15 +1467,21 @@ const Home: React.FC = () => {
     try {
       const result = await NativeFluidSynth.pickAndLoadSoundFont();
       const nativeFont: SoundFontData = {
-        id: 'native-sf2',
+        id: `native-sf2:${result.path}`,
         fileName: result.fileName,
         buffer: new ArrayBuffer(0),
+        nativePath: result.path,
       };
       setSoundFonts((current) => [...current.filter((font) => font.id !== nativeFont.id), nativeFont]);
       setSoundFont(nativeFont);
       try {
-        localStorage.setItem(ACTIVE_NATIVE_SOUND_FONT_KEY, result.fileName);
+        const nativeFonts = JSON.parse(localStorage.getItem(NATIVE_SOUND_FONTS_KEY) ?? '[]') as Array<{ id: string; fileName: string; path: string }>;
+        localStorage.setItem(NATIVE_SOUND_FONTS_KEY, JSON.stringify([
+          ...nativeFonts.filter((font) => font.id !== nativeFont.id),
+          { id: nativeFont.id, fileName: nativeFont.fileName, path: result.path },
+        ]));
         localStorage.setItem(ACTIVE_SOUND_FONT_KEY, nativeFont.id);
+        localStorage.setItem(ACTIVE_NATIVE_SOUND_FONT_KEY, nativeFont.id);
       } catch {
         // Native loading succeeded even if browser storage is unavailable.
       }

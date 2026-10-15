@@ -68,7 +68,7 @@ public class NativeFluidSynthPlugin extends Plugin {
         }
         showStatus("Binabasa ang napiling SoundFont...");
         getBridge().execute(() -> {
-            File target = new File(getContext().getFilesDir(), "active-soundfont.sf2");
+            File target = null;
             try {
                 String displayName = getDisplayName(uri);
                 String responseFileName = displayName == null ? "SoundFont.sf2" : displayName;
@@ -79,6 +79,13 @@ public class NativeFluidSynthPlugin extends Plugin {
                     || "application/zip".equalsIgnoreCase(mimeType)
                     || "application/x-zip-compressed".equalsIgnoreCase(mimeType)
                     || isZipContent(uri);
+                String safeBaseName = displayName.replaceAll("[^A-Za-z0-9._-]", "_");
+                if (safeBaseName.isEmpty()) safeBaseName = "soundfont";
+                if (safeBaseName.toLowerCase(java.util.Locale.ROOT).endsWith(".zip")) {
+                    safeBaseName = safeBaseName.substring(0, safeBaseName.length() - 4);
+                }
+                if (!safeBaseName.toLowerCase(java.util.Locale.ROOT).endsWith(".sf2")) safeBaseName += ".sf2";
+                target = new File(getContext().getFilesDir(), "soundfont-" + System.currentTimeMillis() + "-" + safeBaseName);
                 String loadedFileName;
                 try (InputStream input = getContext().getContentResolver().openInputStream(uri)) {
                     if (input == null) throw new java.io.IOException("Hindi mabuksan ang napiling file.");
@@ -101,13 +108,13 @@ public class NativeFluidSynthPlugin extends Plugin {
                 call.resolve(response);
                 showStatus("SoundFont handa na.");
             } catch (Exception exception) {
-                if (target.exists()) target.delete();
+                if (target != null && target.exists()) target.delete();
                 String message = exception.getMessage();
                 String errorMessage = message == null ? "Hindi mabasa ang napiling file." : message;
                 call.reject("Hindi ma-import ang SoundFont: " + errorMessage);
                 showStatus("Hindi ma-import: " + errorMessage);
             } catch (UnsatisfiedLinkError error) {
-                if (target.exists()) target.delete();
+                if (target != null && target.exists()) target.delete();
                 call.reject("Hindi available ang native audio engine sa APK na ito. Mag-download ng bagong APK.");
                 showStatus("Walang native audio engine sa APK.");
             }

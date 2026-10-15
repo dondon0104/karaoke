@@ -1826,4 +1826,20 @@ body {
     bottom: 12vh;
     left: 4vw;
   }
+
+  @media (orientation: portrait) and (max-width: 599px) {
+    .cinema-layout .karaoke-screen {
+      top: 34px;
+      height: min(58vh, 470px);
+    }
+
+    .cinema-layout .karaoke-screen.has-midi .title-block {
+      bottom: 18px;
+    }
+
+    .cinema-layout .karaoke-screen.has-video .title-block,
+    .cinema-layout .karaoke-screen:not(.has-midi) .title-block {
+      bottom: 18px;
+    }
+  }
 }

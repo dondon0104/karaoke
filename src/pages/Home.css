@@ -1749,6 +1749,20 @@ body {
     }
   }
 
+  @media (orientation: landscape) and (max-width: 900px) {
+    .cinema-layout .karaoke-shell > :not(.karaoke-screen) {
+      display: none !important;
+    }
+
+    .cinema-layout .karaoke-shell > .karaoke-screen {
+      display: block;
+      position: relative;
+      width: 100%;
+      height: 100%;
+      min-height: 100%;
+    }
+  }
+
   body,
   .karaoke-app,
   .karaoke-shell {

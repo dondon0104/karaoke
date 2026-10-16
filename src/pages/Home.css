@@ -1829,17 +1829,17 @@ body {
 
   @media (orientation: portrait) and (max-width: 599px) {
     .cinema-layout .karaoke-screen {
-      top: 34px;
-      height: min(58vh, 470px);
+      top: 56px;
+      height: min(50vh, 420px);
     }
 
     .cinema-layout .karaoke-screen.has-midi .title-block {
-      bottom: 18px;
+      bottom: 14px;
     }
 
     .cinema-layout .karaoke-screen.has-video .title-block,
     .cinema-layout .karaoke-screen:not(.has-midi) .title-block {
-      bottom: 18px;
+      bottom: 14px;
     }
   }
 }

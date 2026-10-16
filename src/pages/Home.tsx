@@ -883,7 +883,7 @@ const Home: React.FC = () => {
     }
     const synthesizer = midiSynthRef.current;
     if (isNativeAndroid && !isNativeMidiReady) return;
-    if (soundFont && (!synthesizer || !isMidiSynthReady)) return;
+    if (!isNativeAndroid && soundFont && (!synthesizer || !isMidiSynthReady)) return;
 
     const AudioContextConstructor = window.AudioContext;
     if (!AudioContextConstructor) {
@@ -941,8 +941,8 @@ const Home: React.FC = () => {
       }
     };
 
-    if (synthesizer) {
-      synthesizer.stopAll(true);
+    if (synthesizer || isNativeAndroid) {
+      synthesizer?.stopAll(true);
       for (const event of midiSong.events) {
         if (event.time >= startOffset) break;
         if (event.type === 'programChange' || event.type === 'controller' || event.type === 'pitchBend') {
@@ -974,7 +974,7 @@ const Home: React.FC = () => {
 
     const timer = window.setInterval(() => {
       const position = startOffset + Math.max(0, context.currentTime - startAt) * rate;
-      if (synthesizer) {
+      if (synthesizer || isNativeAndroid) {
         const scheduleThrough = position + 0.12 * rate;
         while (nextEventIndex < midiSong.events.length && midiSong.events[nextEventIndex].time <= scheduleThrough) {
           const event = midiSong.events[nextEventIndex];

@@ -643,7 +643,13 @@ const Home: React.FC = () => {
                 const activeNativeId = localStorage.getItem(ACTIVE_NATIVE_SOUND_FONT_KEY);
                 loadedSoundFont = nativeRecords.find((font) => font.id === activeNativeId) ?? loadedSoundFont ?? nativeRecords[0] ?? null;
                 if (loadedSoundFont?.nativePath) {
-                  void NativeFluidSynth.loadSoundFont({ path: loadedSoundFont.nativePath });
+                  void NativeFluidSynth.loadSoundFont({ path: loadedSoundFont.nativePath })
+                    .then(() => setIsNativeMidiReady(true))
+                    .catch((loadError: unknown) => {
+                      if (isMounted) {
+                        setError(loadError instanceof Error ? loadError.message : `Hindi ma-load ang ${loadedSoundFont?.fileName ?? 'SoundFont'}.`);
+                      }
+                    });
                 }
               } catch {
                 // The native engine remains available even if browser storage is unavailable.
@@ -850,6 +856,13 @@ const Home: React.FC = () => {
     }
   }, [isNativeAndroid, soundFont]);
 
+  useEffect(() => {
+    if (isNativeAndroid || !isPlaying || !currentSong || !isMidiSong(currentSong) || !soundFont) return;
+    if (loadedSoundFontRef.current === soundFont && midiSynthRef.current && isMidiSynthReady) return;
+    setIsMidiSynthReady(false);
+    void unlockMidiAudio();
+  }, [currentSong, isMidiSynthReady, isNativeAndroid, isPlaying, soundFont, unlockMidiAudio]);
+
   const playSong = useCallback((song: Song, remainingQueue?: string[]) => {
     setError('');
     setDuration(Number.NaN);
@@ -890,6 +903,7 @@ const Home: React.FC = () => {
     const synthesizer = midiSynthRef.current;
     if (isNativeAndroid && !isNativeMidiReady) return;
     if (!isNativeAndroid && soundFont && (!synthesizer || !isMidiSynthReady)) return;
+    if (!isNativeAndroid && loadedSoundFontRef.current !== soundFont) return;
 
     const AudioContextConstructor = window.AudioContext;
     if (!AudioContextConstructor) {
@@ -906,7 +920,6 @@ const Home: React.FC = () => {
       masterGain.connect(midiCompressorRef.current ?? context.destination);
       midiGainRef.current = masterGain;
     }
-    masterGain.gain.setTargetAtTime((volume / 100) * 0.8, context.currentTime, 0.02);
     void context.resume().catch(() => {
       setIsPlaying(false);
       setError('Na-block ang tunog ng browser. Pindutin ulit ang Play para payagan ang audio.');
@@ -1018,9 +1031,15 @@ const Home: React.FC = () => {
       midiNodesRef.current = [];
       synthesizer?.stopAll(true);
       stopNativeMidi();
-      void context.suspend();
     };
-  }, [currentSong, isMidiSynthReady, isNativeAndroid, isNativeMidiReady, isPlaying, keyValue, midiSong, soundFont, stopNativeMidi, tempo, volume]);
+  }, [currentSong, isMidiSynthReady, isNativeAndroid, isNativeMidiReady, isPlaying, keyValue, midiSong, soundFont, stopNativeMidi, tempo]);
+
+  useEffect(() => {
+    const context = midiContextRef.current;
+    const gain = midiGainRef.current;
+    if (!context || !gain) return;
+    gain.gain.setTargetAtTime((volume / 100) * 0.8, context.currentTime, 0.02);
+  }, [volume]);
 
   const playPrevious = () => {
     historyRef.current.pop();
@@ -1387,9 +1406,12 @@ const Home: React.FC = () => {
   const chooseSoundFont = (font: SoundFontData) => {
     try {
       if (font.nativePath) {
-        void NativeFluidSynth.loadSoundFont({ path: font.nativePath }).catch((loadError: unknown) => {
-          setError(loadError instanceof Error ? loadError.message : `Hindi ma-load ang ${font.fileName}.`);
-        });
+        setIsNativeMidiReady(false);
+        void NativeFluidSynth.loadSoundFont({ path: font.nativePath })
+          .then(() => setIsNativeMidiReady(true))
+          .catch((loadError: unknown) => {
+            setError(loadError instanceof Error ? loadError.message : `Hindi ma-load ang ${font.fileName}.`);
+          });
       }
       localStorage.setItem(ACTIVE_SOUND_FONT_KEY, font.id);
       if (font.nativePath) localStorage.setItem(ACTIVE_NATIVE_SOUND_FONT_KEY, font.id);

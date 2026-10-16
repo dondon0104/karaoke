@@ -67,6 +67,7 @@ public final class NativeFluidSynth {
 
     public void noteOn(int channel, int note, int velocity) { nativeNoteOn(channel, note, velocity); }
     public void noteOff(int channel, int note) { nativeNoteOff(channel, note); }
+    public void stopAll() { nativeStopAll(); }
     public void controlChange(int channel, int controller, int value) { nativeControlChange(channel, controller, value); }
     public void programChange(int channel, int program) { nativeProgramChange(channel, program); }
     public void pitchBend(int channel, int value) { nativePitchBend(channel, value); }
@@ -75,6 +76,7 @@ public final class NativeFluidSynth {
     private static native void nativeUnload();
     private static native void nativeNoteOn(int channel, int note, int velocity);
     private static native void nativeNoteOff(int channel, int note);
+    private static native void nativeStopAll();
     private static native void nativeControlChange(int channel, int controller, int value);
     private static native void nativeProgramChange(int channel, int program);
     private static native void nativePitchBend(int channel, int value);

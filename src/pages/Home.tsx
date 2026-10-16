@@ -588,6 +588,12 @@ const Home: React.FC = () => {
   const isPlayingRef = useRef(false);
   const isRotatingRef = useRef(false);
   const isNativeAndroid = Capacitor.getPlatform() === 'android';
+  const stopNativeMidi = useCallback(() => {
+    if (!isNativeAndroid) return;
+    void NativeFluidSynth.stopAll().catch((stopError: unknown) => {
+      setError(stopError instanceof Error ? `Hindi mapatigil ang MIDI audio: ${stopError.message}` : 'Hindi mapatigil ang MIDI audio.');
+    });
+  }, [isNativeAndroid]);
 
   useEffect(() => {
     isPlayingRef.current = isPlaying;
@@ -1011,9 +1017,10 @@ const Home: React.FC = () => {
       });
       midiNodesRef.current = [];
       synthesizer?.stopAll(true);
+      stopNativeMidi();
       void context.suspend();
     };
-  }, [currentSong, isMidiSynthReady, isNativeAndroid, isNativeMidiReady, isPlaying, keyValue, midiSong, soundFont, tempo, volume]);
+  }, [currentSong, isMidiSynthReady, isNativeAndroid, isNativeMidiReady, isPlaying, keyValue, midiSong, soundFont, stopNativeMidi, tempo, volume]);
 
   const playPrevious = () => {
     historyRef.current.pop();
@@ -1359,6 +1366,7 @@ const Home: React.FC = () => {
   const stopPlayback = () => {
     mediaRef.current?.pause();
     if (mediaRef.current) mediaRef.current.currentTime = 0;
+    stopNativeMidi();
     setCurrentTime(0);
     playNext();
   };

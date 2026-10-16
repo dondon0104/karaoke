@@ -56,6 +56,16 @@ Java_com_karaoke_app_NativeFluidSynth_nativeNoteOff(JNIEnv *, jobject, jint chan
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_karaoke_app_NativeFluidSynth_nativeStopAll(JNIEnv *, jobject) {
+    std::lock_guard<std::mutex> lock(synthMutex);
+    if (!synth) return;
+    for (int channel = 0; channel < 16; ++channel) {
+        fluid_synth_cc(synth, channel, 123, 0);
+        fluid_synth_cc(synth, channel, 120, 0);
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_karaoke_app_NativeFluidSynth_nativeControlChange(JNIEnv *, jobject, jint channel, jint controller, jint value) {
     std::lock_guard<std::mutex> lock(synthMutex);
     if (synth) fluid_synth_cc(synth, channel, controller, value);

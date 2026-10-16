@@ -214,6 +214,12 @@ public class NativeFluidSynthPlugin extends Plugin {
     }
 
     @com.getcapacitor.PluginMethod
+    public void stopAll(PluginCall call) {
+        synth.stopAll();
+        call.resolve();
+    }
+
+    @com.getcapacitor.PluginMethod
     public void controlChange(PluginCall call) {
         synth.controlChange(call.getInt("channel", 0), call.getInt("controller", 0), call.getInt("value", 0));
         call.resolve();

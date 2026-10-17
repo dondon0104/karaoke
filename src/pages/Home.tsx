@@ -1611,9 +1611,9 @@ const Home: React.FC = () => {
                 className="import-button soundfont-import-top-button"
                 onClick={() => void pickNativeSoundFont()}
                 disabled={isImporting}
-                title="Mag-import ng SoundFont mula sa SF2 o ZIP"
+                title="Mag-import ng malaking SoundFont mula sa phone storage"
               >
-                {isImporting ? importProgress || 'NAGLO-LOAD…' : '＋ SF2/ZIP'}
+                {isImporting ? importProgress || 'NAGLO-LOAD…' : '＋ SF2/ZIP (NATIVE)'}
               </button>
             )}
             <button
@@ -1902,7 +1902,7 @@ const Home: React.FC = () => {
                 }}
                 disabled={isImporting}
               >
-                {isImporting ? importProgress || 'Ini-import…' : '＋ Mag-import ng .SF2 o ZIP'}
+                {isImporting ? importProgress || 'Ini-import…' : isNativeAndroid ? '＋ Mag-import ng .SF2 o ZIP (NATIVE)' : '＋ Mag-import ng .SF2 o ZIP'}
               </button>
               <div className="soundfont-list">
                 {soundFonts.length ? soundFonts.map((font) => (

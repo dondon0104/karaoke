@@ -138,7 +138,10 @@ public class NativeFluidSynthPlugin extends Plugin {
         ActivityManager.MemoryInfo memoryInfo = new ActivityManager.MemoryInfo();
         ActivityManager activityManager = (ActivityManager) getContext().getSystemService(android.content.Context.ACTIVITY_SERVICE);
         if (activityManager != null) activityManager.getMemoryInfo(memoryInfo);
-        long minimumMemory = requiredBytes + 512L * 1024L * 1024L;
+        // FluidSynth loads the SoundFont natively. Keep a safety margin, but
+        // do not reject large fonts based on Android's conservative availMem
+        // estimate before the native loader gets a chance to load them.
+        long minimumMemory = requiredBytes + 256L * 1024L * 1024L;
         if (memoryInfo != null && memoryInfo.availMem < minimumMemory) {
             throw new java.io.IOException("Kulang ang available RAM ng phone para i-load ang "
                 + (requiredBytes / (1024L * 1024L * 1024L)) + " GB SoundFont. Isara muna ang ibang apps o gumamit ng mas maliit na SoundFont.");

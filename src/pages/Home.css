@@ -1480,6 +1480,33 @@ body {
   }
 }
 
+@media (max-width: 599px) {
+  .cinema-layout .line,
+  .cinema-layout .karaoke-screen.has-midi .line {
+    font-family: Roboto, "Noto Sans", Arial, sans-serif;
+    -webkit-text-stroke-width: 0.55px;
+    text-shadow:
+      1px 1px 2px rgba(0, 0, 0, 0.8),
+      0 1px 3px rgba(0, 0, 0, 0.65);
+    text-rendering: geometricPrecision;
+  }
+
+  .cinema-layout .idle-title {
+    -webkit-text-stroke-width: 0.4px;
+    text-shadow:
+      1px 1px 2px rgba(0, 0, 0, 0.8),
+      0 1px 3px rgba(0, 0, 0, 0.65);
+  }
+
+  .cinema-layout .idle-song-code {
+    font-family: Roboto, "Noto Sans", Arial, sans-serif;
+    text-shadow:
+      1px 1px 2px rgba(124, 67, 0, 0.9),
+      0 2px 4px rgba(0, 0, 0, 0.75);
+    text-rendering: geometricPrecision;
+  }
+}
+
 .cinema-layout .karaoke-transport {
   position: absolute;
   z-index: 8;

@@ -14,16 +14,22 @@ public final class NativeFluidSynth {
     private volatile boolean rendering;
 
     public synchronized boolean loadSoundFont(String path) {
+        stopAudio();
         if (!nativeLoadSoundFont(path)) return false;
         startAudio();
         return true;
     }
 
     public synchronized void unload() {
+        stopAudio();
+        nativeUnload();
+    }
+
+    private synchronized void stopAudio() {
         rendering = false;
         if (audioThread != null) {
             try {
-                audioThread.join(500);
+                audioThread.join(1000);
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
             }
@@ -34,12 +40,12 @@ public final class NativeFluidSynth {
             audioTrack.release();
             audioTrack = null;
         }
-        nativeUnload();
     }
 
     private void startAudio() {
         if (rendering) return;
         int minBuffer = AudioTrack.getMinBufferSize(44100, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT);
+        if (minBuffer <= 0) minBuffer = 16384;
         audioTrack = new AudioTrack.Builder()
             .setAudioAttributes(new AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -50,16 +56,34 @@ public final class NativeFluidSynth {
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                 .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
                 .build())
-            .setBufferSizeInBytes(Math.max(minBuffer, 16384))
+            .setBufferSizeInBytes(Math.max(minBuffer * 2, 32768))
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build();
+        if (audioTrack.getState() != AudioTrack.STATE_INITIALIZED) {
+            audioTrack.release();
+            audioTrack = null;
+            throw new IllegalStateException("Hindi ma-initialize ang Android audio output.");
+        }
         audioTrack.play();
         rendering = true;
         audioThread = new Thread(() -> {
             short[] buffer = new short[2048];
             while (rendering) {
                 nativeRender(buffer, 1024);
-                audioTrack.write(buffer, 0, buffer.length);
+                int offset = 0;
+                while (rendering && offset < buffer.length) {
+                    int written = audioTrack.write(
+                        buffer,
+                        offset,
+                        buffer.length - offset,
+                        AudioTrack.WRITE_BLOCKING
+                    );
+                    if (written <= 0) {
+                        rendering = false;
+                        break;
+                    }
+                    offset += written;
+                }
             }
         }, "NativeFluidSynthAudio");
         audioThread.start();

@@ -1,5 +1,6 @@
 #include <jni.h>
 #include <fluidsynth.h>
+#include <algorithm>
 #include <mutex>
 #include <vector>
 
@@ -21,9 +22,19 @@ Java_com_karaoke_app_NativeFluidSynth_nativeLoadSoundFont(JNIEnv *env, jobject, 
     }
     if (!settings) {
         settings = new_fluid_settings();
+        if (!settings) {
+            env->ReleaseStringUTFChars(path, soundFontPath);
+            return JNI_FALSE;
+        }
         fluid_settings_setnum(settings, "synth.sample-rate", 44100.0);
         fluid_settings_setint(settings, "synth.polyphony", 256);
         synth = new_fluid_synth(settings);
+        if (!synth) {
+            delete_fluid_settings(settings);
+            settings = nullptr;
+            env->ReleaseStringUTFChars(path, soundFontPath);
+            return JNI_FALSE;
+        }
     }
     const int soundFontId = fluid_synth_sfload(synth, soundFontPath, 1);
     env->ReleaseStringUTFChars(path, soundFontPath);

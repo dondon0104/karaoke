@@ -27,6 +27,7 @@ Java_com_karaoke_app_NativeFluidSynth_nativeLoadSoundFont(JNIEnv *env, jobject, 
             return JNI_FALSE;
         }
         fluid_settings_setnum(settings, "synth.sample-rate", 44100.0);
+        fluid_settings_setnum(settings, "synth.gain", 0.12);
         fluid_settings_setint(settings, "synth.polyphony", 256);
         synth = new_fluid_synth(settings);
         if (!synth) {

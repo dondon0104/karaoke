@@ -67,6 +67,7 @@ public final class NativeFluidSynth {
         audioTrack.play();
         rendering = true;
         audioThread = new Thread(() -> {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO);
             short[] buffer = new short[2048];
             while (rendering) {
                 nativeRender(buffer, 1024);

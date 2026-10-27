@@ -930,8 +930,23 @@ const Home: React.FC = () => {
     midiPositionRef.current = startOffset;
     const startAt = context.currentTime + 0.06;
     let finished = false;
+    const nativeEventTimers = new Set<number>();
+    const nativeAudioLeadSeconds = 0.09;
     const firstRemainingEvent = midiSong.events.findIndex((event) => event.time >= startOffset);
     let nextEventIndex = firstRemainingEvent < 0 ? midiSong.events.length : firstRemainingEvent;
+
+    const dispatchNativeEvent = (eventTime: number, dispatch: () => void) => {
+      const delay = Math.max(0, (eventTime - context.currentTime - nativeAudioLeadSeconds) * 1000);
+      if (delay === 0) {
+        dispatch();
+        return;
+      }
+      const timer = window.setTimeout(() => {
+        nativeEventTimers.delete(timer);
+        dispatch();
+      }, delay);
+      nativeEventTimers.add(timer);
+    };
 
     const sendMidiEvent = (event: MidiPlaybackEvent, eventTime: number, transpose: boolean) => {
       if (!synthesizer && !isNativeAndroid) return;
@@ -939,23 +954,25 @@ const Home: React.FC = () => {
       if (event.type === 'noteOn') {
         const note = event.channel === 9 ? event.note : Math.max(0, Math.min(127, event.note + (transpose ? keyValue : 0)));
         if (isNativeAndroid) {
-          if (event.velocity === 0) void NativeFluidSynth.noteOff({ channel: event.channel, note });
-          else void NativeFluidSynth.noteOn({ channel: event.channel, note, velocity: event.velocity });
+          dispatchNativeEvent(eventTime, () => {
+            if (event.velocity === 0) void NativeFluidSynth.noteOff({ channel: event.channel, note });
+            else void NativeFluidSynth.noteOn({ channel: event.channel, note, velocity: event.velocity });
+          });
         } else if (event.velocity === 0) synthesizer?.noteOff(event.channel, note, eventOptions);
         else synthesizer?.noteOn(event.channel, note, event.velocity, eventOptions);
       } else if (event.type === 'noteOff') {
         const note = event.channel === 9 ? event.note : Math.max(0, Math.min(127, event.note + (transpose ? keyValue : 0)));
-        if (isNativeAndroid) void NativeFluidSynth.noteOff({ channel: event.channel, note });
+        if (isNativeAndroid) dispatchNativeEvent(eventTime, () => void NativeFluidSynth.noteOff({ channel: event.channel, note }));
         else synthesizer?.noteOff(event.channel, note, eventOptions);
       } else if (event.type === 'programChange') {
-        if (isNativeAndroid) void NativeFluidSynth.programChange({ channel: event.channel, program: event.program });
+        if (isNativeAndroid) dispatchNativeEvent(eventTime, () => void NativeFluidSynth.programChange({ channel: event.channel, program: event.program }));
         else synthesizer?.programChange(event.channel, event.program, eventOptions);
       } else if (event.type === 'controller') {
-        if (isNativeAndroid) void NativeFluidSynth.controlChange({ channel: event.channel, controller: event.controller, value: event.value });
+        if (isNativeAndroid) dispatchNativeEvent(eventTime, () => void NativeFluidSynth.controlChange({ channel: event.channel, controller: event.controller, value: event.value }));
         else synthesizer?.sendMessage([0xb0 + event.channel, event.controller, event.value], 0, eventOptions);
       } else if (event.type === 'pitchBend') {
         const bend = Math.max(0, Math.min(16383, event.value + 8192));
-        if (isNativeAndroid) void NativeFluidSynth.pitchBend({ channel: event.channel, value: bend });
+        if (isNativeAndroid) dispatchNativeEvent(eventTime, () => void NativeFluidSynth.pitchBend({ channel: event.channel, value: bend }));
         else synthesizer?.sendMessage([0xe0 + event.channel, bend & 0x7f, bend >> 7], 0, eventOptions);
       }
     };
@@ -1015,6 +1032,8 @@ const Home: React.FC = () => {
 
     return () => {
       window.clearInterval(timer);
+      nativeEventTimers.forEach((nativeEventTimer) => window.clearTimeout(nativeEventTimer));
+      nativeEventTimers.clear();
       if (!finished) {
         midiPositionRef.current = Math.min(
           midiSong.duration,

@@ -56,7 +56,7 @@ public final class NativeFluidSynth {
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                 .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
                 .build())
-            .setBufferSizeInBytes(Math.max(minBuffer * 2, 32768))
+            .setBufferSizeInBytes(Math.max(minBuffer * 2, 16384))
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build();
         if (audioTrack.getState() != AudioTrack.STATE_INITIALIZED) {

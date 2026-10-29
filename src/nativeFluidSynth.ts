@@ -1,10 +1,19 @@
 import { registerPlugin } from '@capacitor/core';
 
+export interface ScheduledNativeMidiEvent {
+  type: 'noteOn' | 'noteOff' | 'controller' | 'programChange' | 'pitchBend';
+  channel: number;
+  data1: number;
+  data2: number;
+  delayMs: number;
+}
+
 export interface NativeFluidSynthPlugin {
   loadSoundFont(options: { path: string }): Promise<void>;
   pickAndLoadSoundFont(): Promise<{ path: string; fileName: string }>;
   unload(): Promise<void>;
   stopAll(): Promise<void>;
+  scheduleEvents(options: { events: ScheduledNativeMidiEvent[] }): Promise<void>;
   noteOn(options: { channel: number; note: number; velocity: number }): Promise<void>;
   noteOff(options: { channel: number; note: number }): Promise<void>;
   controlChange(options: { channel: number; controller: number; value: number }): Promise<void>;

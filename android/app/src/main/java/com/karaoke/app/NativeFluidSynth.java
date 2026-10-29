@@ -3,6 +3,10 @@ package com.karaoke.app;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
 import android.media.AudioTrack;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 public final class NativeFluidSynth {
     static {
@@ -12,9 +16,22 @@ public final class NativeFluidSynth {
     private AudioTrack audioTrack;
     private Thread audioThread;
     private volatile boolean rendering;
+    private final AtomicLong midiEventGeneration = new AtomicLong();
+    private final ScheduledThreadPoolExecutor midiScheduler = new ScheduledThreadPoolExecutor(1, new ThreadFactory() {
+        @Override
+        public Thread newThread(Runnable runnable) {
+            Thread thread = new Thread(() -> {
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO);
+                runnable.run();
+            }, "NativeFluidSynthMidi");
+            thread.setDaemon(true);
+            return thread;
+        }
+    });
 
     public synchronized boolean loadSoundFont(String path) {
         stopAudio();
+        midiEventGeneration.incrementAndGet();
         if (!nativeLoadSoundFont(path)) return false;
         startAudio();
         return true;
@@ -22,6 +39,7 @@ public final class NativeFluidSynth {
 
     public synchronized void unload() {
         stopAudio();
+        midiEventGeneration.incrementAndGet();
         nativeUnload();
     }
 
@@ -92,10 +110,39 @@ public final class NativeFluidSynth {
 
     public void noteOn(int channel, int note, int velocity) { nativeNoteOn(channel, note, velocity); }
     public void noteOff(int channel, int note) { nativeNoteOff(channel, note); }
-    public void stopAll() { nativeStopAll(); }
+    public void stopAll() {
+        midiEventGeneration.incrementAndGet();
+        nativeStopAll();
+    }
     public void controlChange(int channel, int controller, int value) { nativeControlChange(channel, controller, value); }
     public void programChange(int channel, int program) { nativeProgramChange(channel, program); }
     public void pitchBend(int channel, int value) { nativePitchBend(channel, value); }
+
+    public void scheduleEvent(String type, int channel, int data1, int data2, int delayMs) {
+        long generation = midiEventGeneration.get();
+        midiScheduler.schedule(() -> {
+            if (generation != midiEventGeneration.get()) return;
+            switch (type) {
+                case "noteOn":
+                    nativeNoteOn(channel, data1, data2);
+                    break;
+                case "noteOff":
+                    nativeNoteOff(channel, data1);
+                    break;
+                case "controller":
+                    nativeControlChange(channel, data1, data2);
+                    break;
+                case "programChange":
+                    nativeProgramChange(channel, data1);
+                    break;
+                case "pitchBend":
+                    nativePitchBend(channel, data1);
+                    break;
+                default:
+                    throw new IllegalArgumentException("Unknown MIDI event type: " + type);
+            }
+        }, Math.max(0, delayMs), TimeUnit.MILLISECONDS);
+    }
 
     private static native boolean nativeLoadSoundFont(String path);
     private static native void nativeUnload();

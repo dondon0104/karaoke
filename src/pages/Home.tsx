@@ -8,6 +8,7 @@ import { WorkletSynthesizer } from 'spessasynth_lib';
 import { Capacitor } from '@capacitor/core';
 import soundFontProcessorUrl from 'spessasynth_lib/dist/spessasynth_processor.min.js?url';
 import { NativeFluidSynth } from '../nativeFluidSynth';
+import type { ScheduledNativeMidiEvent } from '../nativeFluidSynth';
 import './Home.css';
 
 interface Song {
@@ -930,49 +931,53 @@ const Home: React.FC = () => {
     midiPositionRef.current = startOffset;
     const startAt = context.currentTime + 0.06;
     let finished = false;
-    const nativeEventTimers = new Set<number>();
-    const nativeAudioLeadSeconds = 0.09;
+    let pendingNativeEvents: ScheduledNativeMidiEvent[] = [];
     const firstRemainingEvent = midiSong.events.findIndex((event) => event.time >= startOffset);
     let nextEventIndex = firstRemainingEvent < 0 ? midiSong.events.length : firstRemainingEvent;
 
-    const dispatchNativeEvent = (eventTime: number, dispatch: () => void) => {
-      const delay = Math.max(0, (eventTime - context.currentTime - nativeAudioLeadSeconds) * 1000);
-      if (delay === 0) {
-        dispatch();
-        return;
-      }
-      const timer = window.setTimeout(() => {
-        nativeEventTimers.delete(timer);
-        dispatch();
-      }, delay);
-      nativeEventTimers.add(timer);
+    const flushNativeEvents = () => {
+      if (!pendingNativeEvents.length) return;
+      const events = pendingNativeEvents;
+      pendingNativeEvents = [];
+      void NativeFluidSynth.scheduleEvents({ events }).catch((audioError: unknown) => {
+        setError(audioError instanceof Error
+          ? `Hindi maipadala ang MIDI audio events: ${audioError.message}`
+          : 'Hindi maipadala ang MIDI audio events.');
+        setIsPlaying(false);
+      });
     };
 
     const sendMidiEvent = (event: MidiPlaybackEvent, eventTime: number, transpose: boolean) => {
       if (!synthesizer && !isNativeAndroid) return;
       const eventOptions = { time: eventTime };
+      const scheduleNativeEvent = (type: ScheduledNativeMidiEvent['type'], channel: number, data1: number, data2: number) => {
+        pendingNativeEvents.push({
+          type,
+          channel,
+          data1,
+          data2,
+          delayMs: Math.max(0, Math.round((eventTime - context.currentTime) * 1000)),
+        });
+      };
       if (event.type === 'noteOn') {
         const note = event.channel === 9 ? event.note : Math.max(0, Math.min(127, event.note + (transpose ? keyValue : 0)));
         if (isNativeAndroid) {
-          dispatchNativeEvent(eventTime, () => {
-            if (event.velocity === 0) void NativeFluidSynth.noteOff({ channel: event.channel, note });
-            else void NativeFluidSynth.noteOn({ channel: event.channel, note, velocity: event.velocity });
-          });
+          scheduleNativeEvent(event.velocity === 0 ? 'noteOff' : 'noteOn', event.channel, note, event.velocity);
         } else if (event.velocity === 0) synthesizer?.noteOff(event.channel, note, eventOptions);
         else synthesizer?.noteOn(event.channel, note, event.velocity, eventOptions);
       } else if (event.type === 'noteOff') {
         const note = event.channel === 9 ? event.note : Math.max(0, Math.min(127, event.note + (transpose ? keyValue : 0)));
-        if (isNativeAndroid) dispatchNativeEvent(eventTime, () => void NativeFluidSynth.noteOff({ channel: event.channel, note }));
+        if (isNativeAndroid) scheduleNativeEvent('noteOff', event.channel, note, 0);
         else synthesizer?.noteOff(event.channel, note, eventOptions);
       } else if (event.type === 'programChange') {
-        if (isNativeAndroid) dispatchNativeEvent(eventTime, () => void NativeFluidSynth.programChange({ channel: event.channel, program: event.program }));
+        if (isNativeAndroid) scheduleNativeEvent('programChange', event.channel, event.program, 0);
         else synthesizer?.programChange(event.channel, event.program, eventOptions);
       } else if (event.type === 'controller') {
-        if (isNativeAndroid) dispatchNativeEvent(eventTime, () => void NativeFluidSynth.controlChange({ channel: event.channel, controller: event.controller, value: event.value }));
+        if (isNativeAndroid) scheduleNativeEvent('controller', event.channel, event.controller, event.value);
         else synthesizer?.sendMessage([0xb0 + event.channel, event.controller, event.value], 0, eventOptions);
       } else if (event.type === 'pitchBend') {
         const bend = Math.max(0, Math.min(16383, event.value + 8192));
-        if (isNativeAndroid) dispatchNativeEvent(eventTime, () => void NativeFluidSynth.pitchBend({ channel: event.channel, value: bend }));
+        if (isNativeAndroid) scheduleNativeEvent('pitchBend', event.channel, bend, 0);
         else synthesizer?.sendMessage([0xe0 + event.channel, bend & 0x7f, bend >> 7], 0, eventOptions);
       }
     };
@@ -985,6 +990,7 @@ const Home: React.FC = () => {
           sendMidiEvent(event, context.currentTime, false);
         }
       }
+      flushNativeEvents();
     } else if (!isNativeAndroid) {
       midiNodesRef.current = midiSong.notes
         .filter((note) => note.time + note.duration > startOffset)
@@ -1017,6 +1023,7 @@ const Home: React.FC = () => {
           sendMidiEvent(event, startAt + Math.max(0, event.time - startOffset) / rate, true);
           nextEventIndex += 1;
         }
+        flushNativeEvents();
       }
       midiPositionRef.current = Math.min(position, midiSong.duration);
       setCurrentTime(midiPositionRef.current);
@@ -1032,8 +1039,7 @@ const Home: React.FC = () => {
 
     return () => {
       window.clearInterval(timer);
-      nativeEventTimers.forEach((nativeEventTimer) => window.clearTimeout(nativeEventTimer));
-      nativeEventTimers.clear();
+      pendingNativeEvents = [];
       if (!finished) {
         midiPositionRef.current = Math.min(
           midiSong.duration,

@@ -16,6 +16,9 @@ import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.ActivityCallback;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 @CapacitorPlugin(name = "NativeFluidSynth")
 public class NativeFluidSynthPlugin extends Plugin {
@@ -220,6 +223,38 @@ public class NativeFluidSynthPlugin extends Plugin {
     public void stopAll(PluginCall call) {
         synth.stopAll();
         call.resolve();
+    }
+
+    @com.getcapacitor.PluginMethod
+    public void scheduleEvents(PluginCall call) {
+        JSONArray events = call.getData().optJSONArray("events");
+        if (events == null) {
+            call.reject("Missing MIDI events.");
+            return;
+        }
+
+        try {
+            for (int index = 0; index < events.length(); index++) {
+                JSONObject event = events.getJSONObject(index);
+                String type = event.getString("type");
+                int channel = event.getInt("channel");
+                int data1 = event.getInt("data1");
+                int data2 = event.getInt("data2");
+                int delayMs = event.getInt("delayMs");
+                boolean supportedType = "noteOn".equals(type)
+                    || "noteOff".equals(type)
+                    || "controller".equals(type)
+                    || "programChange".equals(type)
+                    || "pitchBend".equals(type);
+                if (!supportedType || channel < 0 || channel > 15 || delayMs < 0 || delayMs > 1000) {
+                    throw new JSONException("Invalid MIDI event timing or channel.");
+                }
+                synth.scheduleEvent(type, channel, data1, data2, delayMs);
+            }
+            call.resolve();
+        } catch (JSONException exception) {
+            call.reject("Invalid MIDI event data: " + exception.getMessage());
+        }
     }
 
     @com.getcapacitor.PluginMethod

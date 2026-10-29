@@ -2,7 +2,6 @@
 #include <fluidsynth.h>
 #include <algorithm>
 #include <mutex>
-#include <vector>
 
 static std::mutex synthMutex;
 static fluid_settings_t *settings = nullptr;
@@ -99,10 +98,13 @@ extern "C" JNIEXPORT jint JNICALL
 Java_com_karaoke_app_NativeFluidSynth_nativeRender(JNIEnv *env, jobject, jshortArray output, jint frames) {
     std::lock_guard<std::mutex> lock(synthMutex);
     if (!synth) return 0;
-    jsize available = env->GetArrayLength(output);
-    const int samples = std::min(static_cast<int>(available), frames * 2);
-    std::vector<jshort> buffer(samples);
-    const int rendered = fluid_synth_write_s16(synth, frames, buffer.data(), 0, 2, buffer.data(), 1, 2);
-    env->SetShortArrayRegion(output, 0, samples, buffer.data());
+    const jsize available = env->GetArrayLength(output);
+    const int boundedFrames = std::min(std::max(static_cast<int>(frames), 0), static_cast<int>(available) / 2);
+    if (boundedFrames == 0) return 0;
+
+    jshort *buffer = env->GetShortArrayElements(output, nullptr);
+    if (!buffer) return 0;
+    const int rendered = fluid_synth_write_s16(synth, boundedFrames, buffer, 0, 2, buffer, 1, 2);
+    env->ReleaseShortArrayElements(output, buffer, 0);
     return rendered;
 }

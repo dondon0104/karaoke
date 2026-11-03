@@ -1017,7 +1017,8 @@ const Home: React.FC = () => {
     const timer = window.setInterval(() => {
       const position = startOffset + Math.max(0, context.currentTime - startAt) * rate;
       if (synthesizer || isNativeAndroid) {
-        const scheduleThrough = position + 0.12 * rate;
+        const scheduleAhead = isNativeAndroid ? 0.4 : 0.12;
+        const scheduleThrough = position + scheduleAhead * rate;
         while (nextEventIndex < midiSong.events.length && midiSong.events[nextEventIndex].time <= scheduleThrough) {
           const event = midiSong.events[nextEventIndex];
           sendMidiEvent(event, startAt + Math.max(0, event.time - startOffset) / rate, true);

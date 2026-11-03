@@ -66,7 +66,7 @@ public final class NativeFluidSynth {
     private void startAudio(int sampleRate) {
         if (rendering) return;
         int minBuffer = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT);
-        int targetBuffer = sampleRate * 4 / 10;
+        int targetBuffer = sampleRate * 4 * 4 / 10;
         audioTrack = new AudioTrack.Builder()
             .setAudioAttributes(new AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_MEDIA)

@@ -8,7 +8,7 @@ static fluid_settings_t *settings = nullptr;
 static fluid_synth_t *synth = nullptr;
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_karaoke_app_NativeFluidSynth_nativeLoadSoundFont(JNIEnv *env, jobject, jstring path) {
+Java_com_karaoke_app_NativeFluidSynth_nativeLoadSoundFont(JNIEnv *env, jobject, jstring path, jint sampleRate) {
     const char *soundFontPath = env->GetStringUTFChars(path, nullptr);
     std::lock_guard<std::mutex> lock(synthMutex);
     if (synth) {
@@ -25,7 +25,7 @@ Java_com_karaoke_app_NativeFluidSynth_nativeLoadSoundFont(JNIEnv *env, jobject, 
             env->ReleaseStringUTFChars(path, soundFontPath);
             return JNI_FALSE;
         }
-        fluid_settings_setnum(settings, "synth.sample-rate", 44100.0);
+        fluid_settings_setnum(settings, "synth.sample-rate", static_cast<double>(sampleRate));
         fluid_settings_setnum(settings, "synth.gain", 0.12);
         fluid_settings_setint(settings, "synth.polyphony", 128);
         synth = new_fluid_synth(settings);

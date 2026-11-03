@@ -2,6 +2,7 @@ package com.karaoke.app;
 
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
+import android.media.AudioManager;
 import android.media.AudioTrack;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.ThreadFactory;
@@ -32,8 +33,10 @@ public final class NativeFluidSynth {
     public synchronized boolean loadSoundFont(String path) {
         stopAudio();
         midiEventGeneration.incrementAndGet();
-        if (!nativeLoadSoundFont(path)) return false;
-        startAudio();
+        int sampleRate = AudioTrack.getNativeOutputSampleRate(AudioManager.STREAM_MUSIC);
+        if (sampleRate < 22050 || sampleRate > 96000) sampleRate = 44100;
+        if (!nativeLoadSoundFont(path, sampleRate)) return false;
+        startAudio(sampleRate);
         return true;
     }
 
@@ -60,21 +63,21 @@ public final class NativeFluidSynth {
         }
     }
 
-    private void startAudio() {
+    private void startAudio(int sampleRate) {
         if (rendering) return;
-        int minBuffer = AudioTrack.getMinBufferSize(44100, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT);
-        if (minBuffer <= 0) minBuffer = 16384;
+        int minBuffer = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT);
+        int targetBuffer = sampleRate * 4 / 10;
         audioTrack = new AudioTrack.Builder()
             .setAudioAttributes(new AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                 .build())
             .setAudioFormat(new AudioFormat.Builder()
-                .setSampleRate(44100)
+                .setSampleRate(sampleRate)
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                 .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
                 .build())
-            .setBufferSizeInBytes(Math.max(minBuffer * 2, 16384))
+            .setBufferSizeInBytes(Math.max(targetBuffer, minBuffer > 0 ? minBuffer * 2 : targetBuffer))
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build();
         if (audioTrack.getState() != AudioTrack.STATE_INITIALIZED) {
@@ -144,7 +147,7 @@ public final class NativeFluidSynth {
         }, Math.max(0, delayMs), TimeUnit.MILLISECONDS);
     }
 
-    private static native boolean nativeLoadSoundFont(String path);
+    private static native boolean nativeLoadSoundFont(String path, int sampleRate);
     private static native void nativeUnload();
     private static native void nativeNoteOn(int channel, int note, int velocity);
     private static native void nativeNoteOff(int channel, int note);
